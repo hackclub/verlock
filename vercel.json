@@ -1,0 +1,12 @@
+{
+  "framework": "fastapi",
+  "regions": [
+    "iad1"
+  ],
+  "functions": {
+    "main.py": {
+      "maxDuration": 800,
+      "includeFiles": "{runtime/**,node_modules/**,scripts/**,sandbox/**,static/**}"
+    }
+  }
+}

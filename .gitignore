@@ -1,0 +1,14 @@
+.env
+.venv/
+.vercel/
+__pycache__/
+*.pyc
+.playwright-mcp/
+.vercel
+.env*
+node_modules/
+runtime/
+
+sessions/
+access.json
+desktop-*.png

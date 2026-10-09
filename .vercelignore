@@ -1,0 +1,9 @@
+.git
+.venv
+.env*
+.playwright-mcp
+tests
+docker
+__pycache__
+
+*.png

@@ -140,6 +140,8 @@
             <br><br>
             <small>Please allow popups for this site to open sessions automatically.</small>
         </div>
+        <p>Sessions open an isolated desktop and expire after one hour.</p>
+        <button id="stop-session" class="hidden" type="button">Close Session</button>
         <div id="output"></div>
     </div>
     
@@ -193,11 +195,7 @@
                         let adminLinks = [];
                         
                         if (data.user.is_admin) {
-                             adminLinks.push(`<a href="/admin" style="margin-left:5px; color:#ec3750; text-decoration:none;">(Global Airlock Admin)</a>`);
-                        }
-                        
-                        if (data.user.organization && data.user.organization.admins.includes(data.user.slack_id)) {
-                             adminLinks.push(`<a href="/admin?org=${data.user.organization.id}" style="margin-left:5px; color:#ec3750; text-decoration:none;">(${data.user.organization.name} Admin)</a>`);
+                             adminLinks.push(`<a href="/admin" style="margin-left:5px; color:#ec3750; text-decoration:none;">(Admin dashboard)</a>`);
                         }
                         
                         if (adminLinks.length > 0) {
@@ -232,9 +230,31 @@
             }
         }
 
+        const stopButton = document.getElementById('stop-session');
+        let sandboxName = null;
+        stopButton.addEventListener('click', async () => {
+            stopButton.disabled = true;
+            try {
+                const response = await fetch(`/api/v1/sessions/${sandboxName}/stop`, {method: 'POST'});
+                if (!response.ok) throw new Error('Could not close session. Try again.');
+                outputDiv.textContent += '\nSession closed.\n';
+                stopButton.classList.add('hidden');
+                popupWarning.classList.add('hidden');
+                sandboxName = null;
+            } catch (error) {
+                outputDiv.textContent += `\n${error.message}\n`;
+            } finally {
+                stopButton.disabled = false;
+            }
+        });
+
         sessionForm.addEventListener('submit', async (e) => {
             e.preventDefault();
             if (isSessionLoading) return;
+            if (sandboxName) {
+                outputDiv.textContent += '\nClose your current session before starting another.\n';
+                return;
+            }
 
             isSessionLoading = true;
             const repoUrl = document.getElementById('repo-url').value;
@@ -252,6 +272,7 @@
                     return;
                 }
 
+                if (!res.ok) throw new Error(`Session request failed (${res.status})`);
                 const reader = res.body.getReader();
                 const decoder = new TextDecoder();
                 let fullText = '';
@@ -265,6 +286,11 @@
                     outputDiv.textContent += text;
                     outputDiv.scrollTop = outputDiv.scrollHeight;
 
+                    const sandboxMatch = fullText.match(/\[\*\] Sandbox: (airlock-[a-f0-9]{32})/);
+                    if (sandboxMatch) {
+                        sandboxName = sandboxMatch[1];
+                        stopButton.classList.remove('hidden');
+                    }
                     if (!sessionOpened) {
                          const match = fullText.match(/\[SUCCESS\] Session: (https?:\/\/[^\s]+)/);
                          if (match) {

@@ -6,15 +6,24 @@ import httpx
 import markdown
 import logging
 import uuid
+import re
+import tomllib
+from launch_timing import launch_stage
+from access_control import load_access, role_for, update_access
+from vercel_sandbox import create_session, stop_session, reserve_session, list_running_sessions
+from state_store import load_state, save_state
+from ai_errors import AIRequestError, check_ai_response
+from runtime_tools import vc_command
+from request_identity import current_oidc_token, VercelIdentityMiddleware
 from cachetools import TTLCache
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, Response, HTTPException, Depends
 from fastapi.responses import HTMLResponse, StreamingResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from starlette.middleware.sessions import SessionMiddleware
 from authlib.integrations.starlette_client import OAuth
-from typing import List, Optional
+from typing import Literal, Optional
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -27,12 +36,15 @@ logger = logging.getLogger(__name__)
 
 # Configuration
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-HC_AI_KEY = os.getenv("HACKCLUB_AI_KEY")
-KASM_API_KEY = os.getenv("KASM_API_KEY")
-KASM_API_SECRET = os.getenv("KASM_API_KEY_SECRET")
-KASM_URL = os.getenv("KASM_SERVER_URL", "").rstrip('/')
-KASM_IMAGE_ID = os.getenv("KASM_IMAGE_ID")
+AI_BASE_URL = os.getenv("AI_BASE_URL", "https://ai-gateway.vercel.sh/v1").rstrip("/")
+AI_MODEL = os.getenv("AI_MODEL", "inclusionai/ling-3.1-flash")
 
+def ai_headers():
+    custom = AI_BASE_URL != "https://ai-gateway.vercel.sh/v1"
+    key = os.getenv("AI_API_KEY") if custom else (os.getenv("AI_GATEWAY_API_KEY") or current_oidc_token())
+    if not key:
+        raise RuntimeError("AI authentication is not configured")
+    return {"Authorization": "Bearer " + key}
 # Auth Configuration
 HC_CLIENT_ID = os.getenv("HACKCLUB_CLIENT_ID")
 HC_CLIENT_SECRET = os.getenv("HACKCLUB_CLIENT_SECRET")
@@ -40,39 +52,23 @@ APP_SECRET = os.getenv("APP_SECRET")
 
 # Slack Configuration
 SLACK_BOT_TOKEN = os.getenv("SLACK_BOT_TOKEN")
-SLACK_CHANNEL_ID = os.getenv("SLACK_CHANNEL_ID")
 slack_client = WebClient(token=SLACK_BOT_TOKEN)
-
-# Access Control
-# Admins are loaded from ENV
-ADMIN_USERS = os.getenv("ADMIN_USERS", "").split(",")
-# Regular users are stored in JSON
-USERS_FILE = "users.json"
-ORGANIZATIONS_FILE = "organizations.json"
 
 # Caches
 slack_profile_cache = TTLCache(maxsize=1000, ttl=600)  # 10 minutes cache
 
 # Models
 class User(BaseModel):
-    slack_id: str
+    slack_id: str = Field(pattern=r'^[UW][A-Z0-9]{5,31}$')
+    role: Literal['member', 'admin'] = 'member'
     email: Optional[str] = None
 
-class Organization(BaseModel):
-    id: str
-    name: str
-    kasm_user_id: Optional[str] = None
-    session_limit: int = 10
-    admins: List[str] = []
-    users: List[str] = []
-
-class OrganizationUpdate(BaseModel):
-    name: Optional[str] = None
-    kasm_user_id: Optional[str] = None
-    session_limit: Optional[int] = None
+class RoleUpdate(BaseModel):
+    role: Literal['member', 'admin']
 
 # Initialize FastAPI
 app = FastAPI()
+app.add_middleware(VercelIdentityMiddleware)
 app.add_middleware(SessionMiddleware, secret_key=APP_SECRET)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
@@ -84,39 +80,15 @@ oauth.register(
     client_secret=HC_CLIENT_SECRET,
     server_metadata_url='https://auth.hackclub.com/.well-known/openid-configuration',
     client_kwargs={
-        'scope': 'openid profile email slack_id'
+        'scope': 'openid slack_id'
     }
 )
 
 # --- Helper Functions ---
 
-def load_users():
-    if not os.path.exists(USERS_FILE):
-        return []
-    try:
-        with open(USERS_FILE, 'r') as f:
-            return json.load(f)
-    except:
-        return []
-
-def save_users(users):
-    with open(USERS_FILE, 'w') as f:
-        json.dump(users, f, indent=2)
-
-def load_organizations():
-    if not os.path.exists(ORGANIZATIONS_FILE):
-        return []
-    try:
-        with open(ORGANIZATIONS_FILE, 'r') as f:
-            return json.load(f)
-    except:
-        return []
-
-def save_organizations(orgs):
-    with open(ORGANIZATIONS_FILE, 'w') as f:
-        json.dump(orgs, f, indent=2)
-
 def get_slack_profile(slack_id: str):
+    if not SLACK_BOT_TOKEN:
+        return {"id": slack_id, "display_name": slack_id, "image": None}
     if slack_id in slack_profile_cache:
         return slack_profile_cache[slack_id]
     
@@ -138,72 +110,8 @@ def get_slack_profile(slack_id: str):
     
     return {"id": slack_id, "display_name": slack_id, "image": None}
 
-def get_user_organization(slack_id):
-    orgs = load_organizations()
-    for org in orgs:
-        if slack_id in org['admins'] or slack_id in org['users']:
-            return org
-    return None
-
-def is_user_in_channel(user_id):
-    try:
-        # Initial call to get the first page of members
-        response = slack_client.conversations_members(channel=SLACK_CHANNEL_ID, limit=1000)
-        members = response["members"]
-        
-        while True:
-            # Check if user is in the current batch of members
-            if user_id in members:
-                return True
-            
-            # Check if there is another page of members
-            cursor = response.get("response_metadata", {}).get("next_cursor")
-            
-            if not cursor:
-                # No more pages, user was not found
-                break
-            
-            # Fetch the next page using the cursor
-            response = slack_client.conversations_members(channel=SLACK_CHANNEL_ID, cursor=cursor, limit=1000)
-            members = response["members"]
-            
-        return False
-
-    except Exception as e:
-        logger.error(f"Error checking channel members: {e}")
-        return False
-
-def is_admin(slack_id):
-    return slack_id in ADMIN_USERS
-
-def is_org_admin(slack_id, org_id):
-    orgs = load_organizations()
-    for org in orgs:
-        if org['id'] == org_id:
-            return slack_id in org['admins']
-    return False
-
-def is_any_org_admin(slack_id):
-    orgs = load_organizations()
-    for org in orgs:
-        if slack_id in org['admins']:
-            return True
-    return False
-
 def is_authorized(slack_id):
-    if is_admin(slack_id):
-        return True
-    
-    # Check if in an organization
-    if get_user_organization(slack_id):
-        return True
-
-    # Check regular users list
-    users = load_users()
-    if any(u['slack_id'] == slack_id for u in users):
-        return True
-        
-    return is_user_in_channel(slack_id)
+    return role_for(slack_id) is not None
 
 def normalize_github_url(url):
     url = url.strip()
@@ -254,15 +162,25 @@ async def get_github_context_data(repo_url):
         # Fallback if github.com not found directly in split (unlikely if check passed)
         raise ValueError("Invalid repo url structure")
 
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
 
     readme = ""
     files_list = []
 
     async with httpx.AsyncClient() as client:
+        repo_response, readme_response, contents_response = await asyncio.gather(
+            client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers),
+            client.get(f"https://api.github.com/repos/{owner}/{repo}/readme", headers=headers),
+            client.get(f"https://api.github.com/repos/{owner}/{repo}/contents", headers=headers),
+            return_exceptions=True,
+        )
         # First check if the repo exists and is accessible
         try:
-            r = await client.get(f"https://api.github.com/repos/{owner}/{repo}", headers=headers)
+            r = repo_response
+            if isinstance(r, Exception):
+                raise r
             if r.status_code == 404:
                 raise ValueError("Repository not found (404). Please check the URL.")
             elif r.status_code != 200:
@@ -271,13 +189,17 @@ async def get_github_context_data(repo_url):
             raise ValueError(f"Network error accessing GitHub: {e}")
 
         try:
-            r = await client.get(f"https://api.github.com/repos/{owner}/{repo}/readme", headers=headers)
+            r = readme_response
+            if isinstance(r, Exception):
+                raise r
             if r.status_code == 200:
                 readme = base64.b64decode(r.json()['content']).decode('utf-8')[:4000]
         except: pass
 
         try:
-            r = await client.get(f"https://api.github.com/repos/{owner}/{repo}/contents", headers=headers)
+            r = contents_response
+            if isinstance(r, Exception):
+                raise r
             if r.status_code == 200:
                 files_data = r.json()
                 if not files_data:
@@ -300,20 +222,66 @@ async def get_github_context_data(repo_url):
         except Exception as e:
              raise ValueError(f"Error listing repository files: {e}")
 
-    return {"readme": readme, "files": "\n".join(files_list), "name": repo, "owner": owner, "repo": repo}
+    return {"readme": readme, "files": "\n".join(files_list), "name": repo, "owner": owner, "repo": repo,
+            "root_files": [item['path'] for item in files_data if item['type'] == 'file'],
+            "root_dirs": [item['path'] for item in files_data if item['type'] == 'dir']}
 
-async def fetch_github_file_content(owner, repo, path):
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
-    async with httpx.AsyncClient() as client:
-        try:
-            r = await client.get(f"https://api.github.com/repos/{owner}/{repo}/contents/{path}", headers=headers)
-            if r.status_code == 200:
-                data = r.json()
-                if 'content' in data:
-                     return base64.b64decode(data['content']).decode('utf-8')
-        except:
-             pass
+async def fetch_github_file_content(owner, repo, path, client=None):
+    if client is None:
+        async with httpx.AsyncClient() as shared_client:
+            return await fetch_github_file_content(owner, repo, path, shared_client)
+    headers = {"Accept": "application/vnd.github.v3+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    try:
+        r = await client.get(f"https://api.github.com/repos/{owner}/{repo}/contents/{path}", headers=headers)
+        if r.status_code == 200:
+            data = r.json()
+            if 'content' in data:
+                 return base64.b64decode(data['content']).decode('utf-8')
+    except (httpx.HTTPError, ValueError, UnicodeError):
+        pass
     return ""
+
+
+async def inspect_common_project(context):
+    """Use root manifests for simple JS/Python projects; defer complex layouts to AI."""
+    paths = set(context['root_files'])
+    if (paths & {'Dockerfile', 'docker-compose.yml', 'docker-compose.yaml', 'compose.yml',
+                 'compose.yaml', 'pnpm-workspace.yaml', 'lerna.json', 'nx.json', 'turbo.json',
+                 'setup.py', 'setup.cfg', 'Makefile', 'Cargo.toml', 'go.mod', 'pom.xml', 'build.gradle'}
+            or set(context['root_dirs']) & {'apps', 'packages', 'frontend', 'backend', 'client', 'server'}):
+        return None
+    manifests = sorted(paths & {'package.json', 'pyproject.toml', 'requirements.txt'})
+    if not manifests:
+        return None
+    async with httpx.AsyncClient() as client:
+        contents = await asyncio.gather(*(fetch_github_file_content(
+            context['owner'], context['repo'], path, client) for path in manifests))
+    loaded = dict(zip(manifests, contents))
+    if not all(contents):
+        return None
+    try:
+        package = json.loads(loaded['package.json']) if 'package.json' in loaded else {}
+        python = tomllib.loads(loaded['pyproject.toml']) if 'pyproject.toml' in loaded else {}
+        if not isinstance(package, dict) or not isinstance(python, dict):
+            return None
+        if ('workspaces' in package or 'workspace' in python.get('tool', {}).get('uv', {})
+                or 'path' in json.dumps(python.get('tool', {}).get('poetry', {}).get('dependencies', {}))):
+            return None
+        # Local packages can require manifests outside the root.
+        if re.search(r'(?:file:|workspace:|link:)', loaded.get('package.json', '')):
+            return None
+        if re.search(r'^\s*(?:-e\b|\.|--requirement\b|--constraint\b|-r\b|-c\b)',
+                     loaded.get('requirements.txt', ''), re.M):
+            return None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    supporting = sorted(paths & {'main.py', 'app.py', 'manage.py', 'vite.config.js',
+                                'vite.config.ts', 'next.config.js', 'next.config.mjs', 'next.config.ts'})
+    return {"tech_stack": " / ".join(filter(None, ["JavaScript" if 'package.json' in paths else "",
+             "Python" if paths & {'pyproject.toml', 'requirements.txt'} else ""])),
+            "files_to_read": manifests + supporting, "contents": loaded}
 
 async def pre_analyze_project(context):
     prompt = f"""
@@ -340,30 +308,38 @@ async def pre_analyze_project(context):
     """
     
     payload = {
-        "model": "google/gemini-3-flash-preview",
-        "messages": [{"role": "system", "content": prompt}],
+        "model": AI_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.5
     }
+    if AI_BASE_URL.startswith("https://openrouter.ai/"):
+        payload["reasoning"] = {"enabled": False}
+        payload["response_format"] = {"type": "json_object"}
+        payload["provider"] = {"sort": "latency"}
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post("https://ai.hackclub.com/proxy/v1/chat/completions",
-                                  headers={"Authorization": f"Bearer {HC_AI_KEY}"}, json=payload)
-            r.raise_for_status()
+            r = await client.post(AI_BASE_URL + "/chat/completions",
+                                  headers=ai_headers(), json=payload)
+            await check_ai_response(r)
             content = r.json()['choices'][0]['message']['content']
             
             if "```json" in content:
                 content = content.replace("```json", "").replace("```", "")
             
             return json.loads(content)
+    except AIRequestError as e:
+        if e.status in {400, 401, 403, 404}:
+            raise
+        logger.error(f"Pre-analysis failed: {e}")
+        return {"difficulty": "easy", "tech_stack": "Unknown", "files_to_read": []}
     except Exception as e:
         logger.error(f"Pre-analysis failed: {e}")
         return {"difficulty": "easy", "tech_stack": "Unknown", "files_to_read": []}
 
-async def analyze_with_ai_data(context, file_contents="", model_id="google/gemini-3-flash-preview"):
-    # Determine retries based on model (easy/hard proxy)
-    # easy (gemini-3-flash) -> 2 retries (total 3 attempts)
-    # hard (claude-opus-latest) -> 1 retry (total 2 attempts)
+async def analyze_with_ai_data(context, file_contents="", model_id=None):
+    model_id = model_id or AI_MODEL
+    # Retry transient streaming failures.
     max_retries = 2 if "flash" in model_id else 1
     
     prompt = f"""
@@ -375,7 +351,7 @@ async def analyze_with_ai_data(context, file_contents="", model_id="google/gemin
     {file_contents}
 
     System Environment:
-    - OS: Ubuntu 22.04 (Jammy Jellyfish)
+    - OS: Ubuntu 24.04 (Noble), with an XFCE desktop streamed through KasmVNC
     - User: Sudo privileges available (no password required).
     - Python 3 is pre-installed.
     - The git repo is already cloned; the script runs from the repo root.
@@ -427,7 +403,7 @@ async def analyze_with_ai_data(context, file_contents="", model_id="google/gemin
     3.  **Error Handling:** Use a `trap` function to catch errors and print a helpful message before exiting.
     4.  **Apt Reliability:** Before running `apt-get install`, use a loop to check for and wait on `/var/lib/dpkg/lock` to ensure apt is not locked by background processes.
     5.  **Idempotency:** Do not blind install. Check if a package/tool exists using `command -v` before attempting to install it.
-    6.  **Environment Isolation:** If Python is required, create a virtual environment (`python3 -m venv venv`), activate it, and install requirements there. Do NOT install global pip packages.
+    6.  **Dependencies:** Use uv for Python and bun for JavaScript dependencies. For Python, use `uv sync` when a pyproject.toml exists, otherwise `uv venv venv` and `uv pip install --python venv/bin/python -r requirements.txt`. Keep dependencies isolated. For JavaScript, use `bun install` and `bun run`.
     7.  **Execution:** The script must handle all dependencies and end by running the project (or printing the command to run it if it is a service).
 
     Task 2: Markdown reviewer guide
@@ -459,20 +435,25 @@ async def analyze_with_ai_data(context, file_contents="", model_id="google/gemin
         try:
             payload = {
                 "model": model_id,
-                "messages": [{"role": "system", "content": prompt}],
+                "messages": [{"role": "user", "content": prompt}],
                 "temperature": 0.5,
                 "stream": True
             }
+            if AI_BASE_URL.startswith("https://openrouter.ai/"):
+                payload["reasoning"] = {"enabled": False}
+                payload["response_format"] = {"type": "json_object"}
+                payload["provider"] = {"sort": "throughput"}
 
             full_content = ""
             start_time = asyncio.get_event_loop().time()
             last_update_time = start_time
-            token_count = 0
+            chunk_count = 0
+            first_content = True
             
             async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream("POST", "https://ai.hackclub.com/proxy/v1/chat/completions",
-                                      headers={"Authorization": f"Bearer {HC_AI_KEY}"}, json=payload) as response:
-                    response.raise_for_status()
+                async with client.stream("POST", AI_BASE_URL + "/chat/completions",
+                                      headers=ai_headers(), json=payload) as response:
+                    await check_ai_response(response)
                     
                     async for line in response.aiter_lines():
                         if not line.startswith("data: "):
@@ -485,17 +466,21 @@ async def analyze_with_ai_data(context, file_contents="", model_id="google/gemin
                         try:
                             chunk = json.loads(data_str)
                             delta = chunk['choices'][0]['delta'].get('content', '')
+                            if delta and first_content:
+                                logger.info("ai_first_content seconds=%.3f attempt=%s",
+                                            asyncio.get_event_loop().time() - start_time, attempt + 1)
+                                first_content = False
                             full_content += delta
-                            token_count += 1 # Rough estimation
+                            chunk_count += 1
                             
                             current_time = asyncio.get_event_loop().time()
                             if current_time - last_update_time >= 2:
                                 elapsed = current_time - start_time
-                                tps = token_count / elapsed if elapsed > 0 else 0
-                                yield f"    [{int(elapsed)}s] Status: {token_count} tokens {tps:.1f} tok/s\n"
+                                chunks_per_second = chunk_count / elapsed if elapsed > 0 else 0
+                                yield f"    [{int(elapsed)}s] Status: {chunk_count} chunks {chunks_per_second:.1f} chunks/s\n"
                                 last_update_time = current_time
                                 
-                        except:
+                        except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                             continue
 
             # Process the full content
@@ -546,6 +531,8 @@ async def analyze_with_ai_data(context, file_contents="", model_id="google/gemin
             return
         
         except Exception as e:
+            if isinstance(e, AIRequestError) and e.status in {400, 401, 403, 404}:
+                raise
             last_exception = e
             logger.warning(f"AI Attempt {attempt+1}/{max_retries+1} failed: {e}")
             if attempt < max_retries:
@@ -554,137 +541,24 @@ async def analyze_with_ai_data(context, file_contents="", model_id="google/gemin
 
     raise last_exception
 
-async def create_kasm_session_generator(repo_url, repo_name, install_script, help_html, tech_stack, kasm_user_id=None):
-    yield "[*] 1. Requesting Session...\n"
+# Session ownership survives Vercel function restarts in private Blob storage.
 
-    payload = {
-        "api_key": KASM_API_KEY,
-        "api_key_secret": KASM_API_SECRET,
-        "image_id": KASM_IMAGE_ID,
-        "enable_sharing": True,
-        "run_config": {"skip_check": True},
-        "launch_config": {
-            "git_url": repo_url
-        }
-    }
-
-    if kasm_user_id:
-        payload["user_id"] = kasm_user_id
-
-    async with httpx.AsyncClient(verify=False) as client:
-        resp = await client.post(f"{KASM_URL}/api/public/request_kasm", json=payload)
-        data = resp.json()
-
-        kasm_id = data.get('kasm_id')
-        user_id = data.get('user_id')
-
-        if not kasm_id or not user_id:
-            yield f"\n[!] FATAL ERROR: Airlock refused to create session. Please contact @Carlos on Slack\n"
-            yield f"    Server Response: {json.dumps(data, indent=2)}\n"
-            return
-
-        yield f"    > Session ID: {kasm_id}\n"
-        yield f"    > User ID: {user_id}\n"
-
-        yield "[*] 2. Waiting for container to start...\n"
-        ready = False
-        kasm_url = ""
-
-        for i in range(150):
-            await asyncio.sleep(2)
+async def create_vercel_session_generator(repo_url, install_script, help_html, slack_id, reservation=None):
+    async for message in create_session(repo_url, install_script, help_html, reservation):
+        if isinstance(message, dict):
             try:
-                status_resp = await client.post(f"{KASM_URL}/api/public/get_kasm_status",
-                                          json={"api_key": KASM_API_KEY, "api_key_secret": KASM_API_SECRET, "kasm_id": kasm_id, "user_id": user_id})
-
-                if status_resp.status_code == 200:
-                    s_data = status_resp.json()
-
-                    op_status = s_data.get('operational_status')
-                    op_msg = s_data.get('operational_message', '')
-
-                    if 'kasm' in s_data and s_data['kasm']:
-                        nested_status = s_data['kasm'].get('operational_status')
-                        if nested_status:
-                            op_status = nested_status
-
-                        if not s_data.get('kasm_url'):
-                            kasm_url = s_data['kasm'].get('kasm_url', '')
-                        else:
-                            kasm_url = s_data.get('kasm_url')
-
-                    if not op_msg: op_msg = "Processing..."
-
-                    yield f"    [{i*2}s] Status: {op_status} | Msg: {op_msg}\n"
-
-                    if op_status == 'running':
-                        if not kasm_url and s_data.get('kasm_url'):
-                            kasm_url = s_data.get('kasm_url')
-                        ready = True
-                        break
-
-                    if op_status in ['stopped', 'failed']:
-                        yield f"Session failed to start. Status: {op_status}\n"
-                        return
-            except Exception as e:
-                yield f"Error polling status: {e}\n"
-
-        if not ready:
-            yield "Container timed out starting.\n"
-            return
-
-        yield "[*] 3. Injecting AI Scripts & Apps...\n"
-        b64_script = base64.b64encode(install_script.encode('utf-8')).decode('utf-8')
-        b64_html = base64.b64encode(help_html.encode('utf-8')).decode('utf-8')
-
-        cmd = (
-            f"bash -c '"
-            f"pkill zenity; "
-            f"echo \"kasm-user ALL=(ALL) NOPASSWD: ALL\" > /etc/sudoers.d/kasm-nopasswd && chmod 0440 /etc/sudoers.d/kasm-nopasswd; "
-            
-            # Set global environment variables
-            f"echo \"export BUN_INSTALL=/usr/local\" >> /etc/profile.d/airlock_env.sh; "
-            f"echo \"export RUSTUP_HOME=/opt/rust\" >> /etc/profile.d/airlock_env.sh; "
-            f"echo \"export CARGO_HOME=/opt/rust\" >> /etc/profile.d/airlock_env.sh; "
-            f"echo \"export PATH=\\\"/opt/rust/bin:/usr/local/go/bin:$PATH\\\"\" >> /etc/profile.d/airlock_env.sh; "
-            f"chmod +x /etc/profile.d/airlock_env.sh; "
-
-            # Also export them for the current root session so subsequent commands use them if needed
-            f"export BUN_INSTALL=/usr/local; "
-            f"export RUSTUP_HOME=/opt/rust; "
-            f"export CARGO_HOME=/opt/rust; "
-            f"export PATH=\"/opt/rust/bin:/usr/local/go/bin:$PATH\"; "
-
-            f"export DISPLAY=:1; "
-            f"sudo -u kasm-user git clone \"{repo_url}\" \"/home/kasm-user/Desktop/{repo_name}\"; "
-            f"echo \"{b64_script}\" | base64 -d > \"/home/kasm-user/Desktop/{repo_name}/airlock_install.sh\"; "
-            f"echo \"{b64_html}\" | base64 -d > \"/home/kasm-user/Desktop/{repo_name}/REVIEW_GUIDE.html\"; "
-            f"chmod +x \"/home/kasm-user/Desktop/{repo_name}/airlock_install.sh\"; "
-            f"sudo -u kasm-user DISPLAY=:1 x-www-browser \"file:///home/kasm-user/Desktop/{repo_name}/REVIEW_GUIDE.html\" >/dev/null 2>&1 & "
-            f"sudo -u kasm-user DISPLAY=:1 x-www-browser \"{repo_url}\" >/dev/null 2>&1 & "
-            f"sudo -u kasm-user DISPLAY=:1 thunar \"/home/kasm-user/Desktop/{repo_name}\" & "
-            f"sudo -u kasm-user DISPLAY=:1 wget https://hc-cdn.hel1.your-objectstorage.com/s/v3/71cb3c1895619d1990e54f5b3ac32e79b80be018_airlock_background.png -O /usr/share/backgrounds/bg_default.png & "
-            f"sudo -u kasm-user DISPLAY=:1 xfce4-terminal --working-directory=\"/home/kasm-user/Desktop/{repo_name}\" -x bash -c \"source /etc/profile.d/airlock_env.sh; ls -lah; exec bash\" & "
-            f"sudo -u kasm-user DISPLAY=:1 xfce4-terminal --working-directory=\"/home/kasm-user/Desktop/{repo_name}\" -x bash -c \"source /etc/profile.d/airlock_env.sh; bash ./airlock_install.sh; exec bash\" & "
-            f"'"
-        )
-
-        exec_payload = {
-            "api_key": KASM_API_KEY,
-            "api_key_secret": KASM_API_SECRET,
-            "kasm_id": kasm_id,
-            "user_id": user_id,
-            "exec_config": {
-                "cmd": cmd,
-                "user": "root"
-            }
-        }
-
-        await client.post(f"{KASM_URL}/api/public/exec_command_kasm", json=exec_payload)
-
-        if kasm_url and kasm_url.startswith("/"):
-            kasm_url = f"{KASM_URL}{kasm_url}"
-
-        yield f"[SUCCESS] Session: {kasm_url}\n"
+                with launch_stage("ownership_save", message["name"]):
+                    await asyncio.to_thread(save_state, "sessions/" + message["name"] + ".json", {"owner": slack_id, "repo_url": repo_url})
+            except BaseException:
+                if reservation is None:
+                    await asyncio.shield(stop_session(message["name"]))
+                raise
+            yield f"[*] Sandbox: {message['name']}\n"
+            if reservation is not None:
+                reservation['delivered'] = True
+            yield f"[SUCCESS] Session: {message['url']}\n"
+        else:
+            yield message
 
 # --- Dependencies ---
 
@@ -695,14 +569,9 @@ async def get_current_user(request: Request):
     return user
 
 async def get_admin_user(user: dict = Depends(get_current_user)):
-    if not is_admin(user['slack_id']):
+    if await asyncio.to_thread(role_for, user['slack_id']) != 'admin':
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
-
-async def get_org_admin_user(user: dict = Depends(get_current_user)):
-    if is_admin(user['slack_id']) or is_any_org_admin(user['slack_id']):
-        return user
-    raise HTTPException(status_code=403, detail="Organization Admin access required")
 
 # --- Routes ---
 
@@ -726,6 +595,8 @@ async def admin_page():
 
 @app.get("/login")
 async def login(request: Request):
+    if not HC_CLIENT_ID or not HC_CLIENT_SECRET:
+        raise HTTPException(status_code=503, detail="Hack Club login is not configured")
     redirect_uri = request.url_for('auth_callback')
     return await oauth.hackclub.authorize_redirect(request, redirect_uri)
 
@@ -775,17 +646,14 @@ async def auth_callback(request: Request):
                  status_code=403
              )
 
-        if not is_authorized(slack_id):
-             return HTMLResponse(
-                 f"""
-                 <title>Airlock | Access Denied</title><style>@font-face{{font-family:'Phantom Sans';src:url(https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Bold.woff) format('woff'),url(https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Bold.woff2) format('woff2');font-weight:700;font-style:normal;font-display:swap}}body{{font-family:sans-serif;margin:0;padding:0;display:flex;justify-content:center;align-items:center;min-height:100vh;background-color:#f4f4f4;color:#333}}.container{{background:#fff;padding:2.5rem;border-radius:8px;box-shadow:0 4px 6px rgba(0,0,0,.1);max-width:700px;margin:40px 20px}}h1{{font-family:'Phantom Sans',sans-serif;color:#ec3750;margin-top:0;margin-bottom:1rem}}p{{line-height:1.6;margin:1rem 0}}ul{{text-align:left;line-height:1.8;margin:1.5rem 0;padding-left:1.5rem}}li{{margin-bottom:1rem;padding-left:.5rem}}strong{{color:#ec3750;font-weight:600}}a{{display:inline-block;background-color:#ec3750;color:#fff;text-decoration:none;padding:12px 24px;border-radius:4px;margin-top:1.5rem;font-family:'Phantom Sans',sans-serif;transition:background-color .2s}}a:hover{{background-color:#d12e43}}</style><div class=container><h1>Access Denied</h1><p>User <strong>{slack_id}</strong> is not authorized to use Airlock.<p>There are a few possible reasons for this:<ul><li>You shouldn't be here, but you saw Hack Club page with log in screen and you clicked the button.<li>You are a reviewer and have a reason to use Airlock, but either you haven't been added to your organization or your organization has not been created yet. If this is the case, please contact the admin of your Airlock Organization.<li>You are the lead reviewer/hq contact/something else on your YSWS/event. But you don't have an organization set up on Airlock yet. If this is the case, please contact @Carlos on Slack or fill out the form below.<li>You do have access to Airlock, but you are logged in with the wrong Slack ID or the wrong Slack ID has been added to your organization. If this is the case, please confirm <strong>{slack_id}</strong> is the correct Slack ID.</ul><p><a href="https://forms.hackclub.com/airlock?id={slack_id}">Click here to request an organization on Airlock</a></div>
-                 """,
-                 status_code=403
-             )
-
-        # Add is_admin flag to session
-        user_info['is_admin'] = is_admin(slack_id)
-        user_info['is_org_admin'] = is_any_org_admin(slack_id)
+        role = await asyncio.to_thread(role_for, slack_id)
+        if role is None:
+            return HTMLResponse(
+                '<h1>Access denied</h1><p>Ask a Verlock admin to add your Slack member ID to People with access.</p><a href="/logout">Try another account</a>',
+                status_code=403,
+            )
+        user_info['is_admin'] = role == 'admin'
+        user_info['role'] = role
         request.session['user'] = dict(user_info)
 
         return RedirectResponse(url='/')
@@ -801,238 +669,207 @@ async def logout(request: Request):
 @app.get("/api/v1/me")
 async def me(user: dict = Depends(get_current_user)):
     user_data = dict(user)
-    org = get_user_organization(user['slack_id'])
-    if org:
-        user_data['organization'] = org
+    user_data["name"] = user_data.get("name") or user_data.get("email") or user_data["slack_id"]
+    role = await asyncio.to_thread(role_for, user['slack_id'])
+    if role is None:
+        raise HTTPException(status_code=403, detail="Airlock access required")
+    user_data.pop('organization', None)
+    user_data.pop('is_org_admin', None)
+    user_data['role'] = role
+    user_data['is_admin'] = role == 'admin'
     return {"status": "authenticated", "user": user_data}
 
 @app.get("/api/v1/getSession")
 async def get_session(repo_url: str, user: dict = Depends(get_current_user)):
-    # Determine KASM user ID
-    kasm_user_id = None
-    org = get_user_organization(user['slack_id'])
-    if org:
-        kasm_user_id = org.get('kasm_user_id')
-    
+    launch_id = uuid.uuid4().hex
+    with launch_stage("authorization", launch_id):
+        if not await asyncio.to_thread(is_authorized, user['slack_id']):
+            raise HTTPException(status_code=403, detail="Airlock access required")
+
     async def process_stream():
-        try:
-            # URL Validation & Normalization
+        with launch_stage("stream_total", launch_id):
             try:
-                normalized_url, warning = normalize_github_url(repo_url)
-                if warning:
-                    yield f"[!] {warning}\n"
-                repo_url_final = normalized_url
-            except ValueError as ve:
-                yield f"[!] Error: {str(ve)}\n"
-                return
+                # URL Validation & Normalization
+                try:
+                    normalized_url, warning = normalize_github_url(repo_url)
+                    if warning:
+                        yield f"[!] {warning}\n"
+                    repo_url_final = normalized_url
+                except ValueError as ve:
+                    yield f"[!] Error: {str(ve)}\n"
+                    return
 
-            yield f"[*] Fetching GitHub data for {repo_url_final}...\n"
-            try:
-                context = await get_github_context_data(repo_url_final)
+                yield f"[*] Fetching GitHub data for {repo_url_final}...\n"
+                try:
+                    with launch_stage("github_metadata", launch_id):
+                        context = await get_github_context_data(repo_url_final)
+                except Exception as e:
+                    yield f"[!] Error fetching GitHub data: {e}\n"
+                    return
+
+                yield "[*] Creating the sandbox while analyzing the project...\n"
+                async with reserve_session(repo_url_final) as reservation:
+                    logger.info("launch_link id=%s sandbox=%s", launch_id, reservation['name'])
+                    # Pre-analysis
+                    yield f"[*] Inspecting the project... ({AI_MODEL})\n"
+                    try:
+                        with launch_stage("inspection", launch_id):
+                            pre_analysis = await inspect_common_project(context)
+                            if pre_analysis is None:
+                                pre_analysis = await pre_analyze_project(context)
+                            else:
+                                yield "[*] Using project manifests for inspection.\n"
+                        tech_stack = pre_analysis.get('tech_stack', 'Unknown')
+                        difficulty = pre_analysis.get('difficulty', 'easy')
+                        files_to_read = pre_analysis.get('files_to_read', [])
+                        preloaded = pre_analysis.get('contents', {})
+
+                        yield f"\n[*] Detected Tech Stack: {tech_stack}\n"
+                    except Exception as e:
+                        yield f"[!] Pre-analysis failed: {e}\n"
+                        if isinstance(e, AIRequestError) and e.status in {400, 401, 403, 404}:
+                            return
+                        # Fallback defaults
+                        difficulty = 'easy'
+                        files_to_read = []
+                        tech_stack = 'Unknown'
+                        preloaded = {}
+
+                    # Fetch extra files
+                    additional_content = ""
+                    if files_to_read:
+                        yield f"[*] Reading: {', '.join(files_to_read)}...\n"
+                        file_contents = []
+                        max_total_chars = 4000
+                        max_per_file = max_total_chars // len(files_to_read) if files_to_read else 4000
+
+                        with launch_stage("github_sources", launch_id):
+                            async with httpx.AsyncClient() as client:
+                                missing = [path for path in files_to_read if path not in preloaded]
+                                fetched = await asyncio.gather(*(fetch_github_file_content(
+                                    context['owner'], context['repo'], path, client) for path in missing))
+                            loaded = {**preloaded, **dict(zip(missing, fetched))}
+                            contents = [loaded[path] for path in files_to_read]
+                        for fpath, content in zip(files_to_read, contents):
+                            if content:
+                                truncated = content[:max_per_file]
+                                file_contents.append(f"File: {fpath}\nContent:\n{truncated}\n")
+
+                        additional_content = "\n".join(file_contents)
+
+                    # Determine model
+                    model_id = AI_MODEL
+
+                    yield f"[*] Analyzing with AI... ({model_id})\n"
+
+                    try:
+                        script = ""
+                        html = ""
+                        final_tech_stack = ""
+                        summary = ""
+
+                        with launch_stage("ai_generation", launch_id):
+                            async for chunk in analyze_with_ai_data(context, additional_content, model_id):
+                                if isinstance(chunk, str):
+                                    yield chunk
+                                elif isinstance(chunk, dict) and chunk['type'] == 'result':
+                                    script, html, final_tech_stack, summary = chunk['data']
+
+                        yield f"\n[*] AI Summary: {summary}\n"
+                    except Exception as e:
+                        yield f"[!] AI Analysis failed: {e}\n"
+                        return
+
+                    async for msg in create_vercel_session_generator(repo_url_final, script, html, user['slack_id'], reservation):
+                        yield msg
+
+                    reservation["delivered"] = True
+
             except Exception as e:
-                yield f"[!] Error fetching GitHub data: {e}\n"
-                return
+                yield f"\n[ERROR] {e}\n"
 
-            # Pre-analysis
-            yield "[*] Inspecting the project... (google/gemini-3-flash)\n"
-            try:
-                pre_analysis = await pre_analyze_project(context)
-                tech_stack = pre_analysis.get('tech_stack', 'Unknown')
-                difficulty = pre_analysis.get('difficulty', 'easy')
-                files_to_read = pre_analysis.get('files_to_read', [])
-                
-                yield f"\n[*] Detected Tech Stack: {tech_stack}\n"
-            except Exception as e:
-                yield f"[!] Pre-analysis failed: {e}\n"
-                # Fallback defaults
-                difficulty = 'easy'
-                files_to_read = []
-                tech_stack = 'Unknown'
+    return StreamingResponse(process_stream(), media_type="text/plain", headers={"Cache-Control": "no-store"})
 
-            # Fetch extra files
-            additional_content = ""
-            if files_to_read:
-                yield f"[*] Reading: {', '.join(files_to_read)}...\n"
-                file_contents = []
-                max_total_chars = 4000
-                max_per_file = max_total_chars // len(files_to_read) if files_to_read else 4000
-                
-                for fpath in files_to_read:
-                    content = await fetch_github_file_content(context['owner'], context['repo'], fpath)
-                    if content:
-                        truncated = content[:max_per_file]
-                        file_contents.append(f"File: {fpath}\nContent:\n{truncated}\n")
-                
-                additional_content = "\n".join(file_contents)
-
-            # Determine model
-            model_id = "google/gemini-3-flash-preview"
-            if difficulty == "hard":
-                model_id = "~anthropic/claude-opus-latest"
-            
-            yield f"[*] Analyzing with AI... ({model_id})\n"
-            
-            try:
-                script = ""
-                html = ""
-                final_tech_stack = ""
-                summary = ""
-                
-                async for chunk in analyze_with_ai_data(context, additional_content, model_id):
-                    if isinstance(chunk, str):
-                        yield chunk
-                    elif isinstance(chunk, dict) and chunk['type'] == 'result':
-                        script, html, final_tech_stack, summary = chunk['data']
-
-                yield f"\n[*] AI Summary: {summary}\n"
-            except Exception as e:
-                yield f"[!] AI Analysis failed: {e}\n"
-                return
-
-            async for msg in create_kasm_session_generator(repo_url_final, context['name'], script, html, tech_stack, kasm_user_id=kasm_user_id):
-                yield msg
-
-        except Exception as e:
-            yield f"\n[ERROR] {e}\n"
-
-    return StreamingResponse(process_stream(), media_type="text/plain")
+@app.post("/api/v1/sessions/{name}/stop")
+async def close_sandbox(name: str, user: dict = Depends(get_current_user)):
+    if not re.fullmatch(r'airlock-[a-f0-9]{32}', name):
+        raise HTTPException(status_code=404, detail="Session not found")
+    ownership = await asyncio.to_thread(load_state, 'sessions/' + name + '.json', {})
+    if ownership.get('owner') != user['slack_id']:
+        raise HTTPException(status_code=404, detail="Session not found")
+    await stop_session(name)
+    await asyncio.to_thread(save_state, "sessions/" + name + ".json", {})
+    return {"status": "stopped"}
 
 # --- Admin API ---
 
+@app.get("/api/v1/admin/sandboxes")
+async def running_sandboxes(response: Response, admin: dict = Depends(get_admin_user)):
+    response.headers['Cache-Control'] = 'no-store'
+    try:
+        sandboxes = await list_running_sessions()
+    except (RuntimeError, asyncio.TimeoutError):
+        raise HTTPException(status_code=503, detail='Could not load running sandboxes. Please retry.')
+    async def describe(sandbox):
+        name = sandbox['name']
+        ownership = {}
+        if re.fullmatch(r'airlock-[a-f0-9]{32}', name):
+            ownership = await asyncio.to_thread(load_state, 'sessions/' + name + '.json', {})
+        return {**sandbox, 'owner': ownership.get('owner'), 'repo_url': ownership.get('repo_url')}
+    return await asyncio.gather(*(describe(sandbox) for sandbox in sandboxes))
+
 @app.get("/api/v1/admin/users")
-async def list_users(admin: dict = Depends(get_admin_user)):
-    return load_users()
+async def list_users(response: Response, admin: dict = Depends(get_admin_user)):
+    response.headers['Cache-Control'] = 'no-store'
+    return await asyncio.to_thread(load_access)
 
-@app.post("/api/v1/admin/users")
-async def add_user(user: User, admin: dict = Depends(get_admin_user)):
-    users = load_users()
-    if any(u['slack_id'] == user.slack_id for u in users):
-        raise HTTPException(status_code=400, detail="User already exists")
 
-    users.append(user.dict())
-    save_users(users)
-    return {"status": "added", "user": user}
+def change_person(actor, slack_id, role=None, person=None, remove=False):
+    def change(people):
+        if not any(p['slack_id'] == actor and p['role'] == 'admin' for p in people):
+            raise HTTPException(status_code=403, detail='Admin access required')
+        existing = next((p for p in people if p['slack_id'] == slack_id), None)
+        if person is not None and existing:
+            raise HTTPException(status_code=409, detail='This person already has access')
+        if person is None and existing is None:
+            raise HTTPException(status_code=404, detail='Person not found')
+        if existing and existing['role'] == 'admin' and (remove or role == 'member'):
+            if sum(p['role'] == 'admin' for p in people) == 1:
+                raise HTTPException(status_code=409, detail='Keep at least one admin')
+        updated = [dict(p) for p in people if not (remove and p['slack_id'] == slack_id)]
+        if person is not None:
+            updated.append(person)
+        elif not remove:
+            next(p for p in updated if p['slack_id'] == slack_id)['role'] = role
+        return updated
+    return update_access(change)
+
+@app.post("/api/v1/admin/users", status_code=201)
+async def add_user(person: User, admin: dict = Depends(get_admin_user)):
+    await asyncio.to_thread(change_person, admin['slack_id'], person.slack_id, person=person.model_dump(exclude_none=True))
+    return {'status': 'added', 'user': person}
+
+@app.patch("/api/v1/admin/users/{slack_id}")
+async def set_role(slack_id: str, update: RoleUpdate, admin: dict = Depends(get_admin_user)):
+    await asyncio.to_thread(change_person, admin['slack_id'], slack_id, role=update.role)
+    return {'status': 'updated', 'role': update.role}
 
 @app.delete("/api/v1/admin/users/{slack_id}")
 async def delete_user(slack_id: str, admin: dict = Depends(get_admin_user)):
-    users = load_users()
-    users = [u for u in users if u['slack_id'] != slack_id]
-    save_users(users)
-    return {"status": "deleted"}
-
-# --- Organization API ---
-
-@app.get("/api/v1/admin/organizations")
-async def list_organizations(admin: dict = Depends(get_admin_user)):
-    return load_organizations()
-
-@app.post("/api/v1/admin/organizations")
-async def create_organization(org: Organization, admin: dict = Depends(get_admin_user)):
-    orgs = load_organizations()
-    if any(o['id'] == org.id for o in orgs):
-        raise HTTPException(status_code=400, detail="Organization ID already exists")
-    
-    # Generate ID if not provided (though model requires it currently, better to handle it)
-    if not org.id:
-        org.id = str(uuid.uuid4())
-
-    orgs.append(org.dict())
-    save_organizations(orgs)
-    return {"status": "created", "organization": org}
-
-@app.get("/api/v1/admin/organizations/{org_id}")
-async def get_organization(org_id: str, user: dict = Depends(get_org_admin_user)):
-    # Check permission
-    if not is_admin(user['slack_id']) and not is_org_admin(user['slack_id'], org_id):
-        raise HTTPException(status_code=403, detail="Access denied to this organization")
-
-    orgs = load_organizations()
-    org = next((o for o in orgs if o['id'] == org_id), None)
-    if not org:
-        raise HTTPException(status_code=404, detail="Organization not found")
-    return org
-
-@app.put("/api/v1/admin/organizations/{org_id}")
-async def update_organization(org_id: str, update: OrganizationUpdate, admin: dict = Depends(get_admin_user)):
-    orgs = load_organizations()
-    for i, o in enumerate(orgs):
-        if o['id'] == org_id:
-            if update.name is not None:
-                o['name'] = update.name
-            if update.kasm_user_id is not None:
-                o['kasm_user_id'] = update.kasm_user_id
-            if update.session_limit is not None:
-                o['session_limit'] = update.session_limit
-            
-            orgs[i] = o
-            save_organizations(orgs)
-            return {"status": "updated", "organization": o}
-            
-    raise HTTPException(status_code=404, detail="Organization not found")
-
-@app.post("/api/v1/admin/organizations/{org_id}/users")
-async def add_org_user(org_id: str, data: dict, user: dict = Depends(get_org_admin_user)):
-    # data: { "slack_id": "...", "role": "admin" | "user" }
-    slack_id = data.get("slack_id")
-    role = data.get("role", "user")
-    
-    if not slack_id:
-        raise HTTPException(status_code=400, detail="slack_id is required")
-
-    # Check permission
-    if not is_admin(user['slack_id']) and not is_org_admin(user['slack_id'], org_id):
-        raise HTTPException(status_code=403, detail="Access denied to this organization")
-
-    orgs = load_organizations()
-    org_idx = next((i for i, o in enumerate(orgs) if o['id'] == org_id), -1)
-    
-    if org_idx == -1:
-        raise HTTPException(status_code=404, detail="Organization not found")
-    
-    org = orgs[org_idx]
-    
-    # Remove from both lists first to ensure no duplicates/conflicts
-    if slack_id in org['admins']:
-        org['admins'].remove(slack_id)
-    if slack_id in org['users']:
-        org['users'].remove(slack_id)
-        
-    if role == 'admin':
-        org['admins'].append(slack_id)
-    else:
-        org['users'].append(slack_id)
-        
-    orgs[org_idx] = org
-    save_organizations(orgs)
-    
-    # Fetch profile for return
-    profile = get_slack_profile(slack_id)
-    return {"status": "added", "role": role, "profile": profile}
-
-@app.delete("/api/v1/admin/organizations/{org_id}/users/{slack_id}")
-async def remove_org_user(org_id: str, slack_id: str, user: dict = Depends(get_org_admin_user)):
-    # Check permission
-    if not is_admin(user['slack_id']) and not is_org_admin(user['slack_id'], org_id):
-        raise HTTPException(status_code=403, detail="Access denied to this organization")
-
-    orgs = load_organizations()
-    org_idx = next((i for i, o in enumerate(orgs) if o['id'] == org_id), -1)
-    
-    if org_idx == -1:
-        raise HTTPException(status_code=404, detail="Organization not found")
-
-    org = orgs[org_idx]
-    
-    if slack_id in org['admins']:
-        org['admins'].remove(slack_id)
-    if slack_id in org['users']:
-        org['users'].remove(slack_id)
-        
-    orgs[org_idx] = org
-    save_organizations(orgs)
-    return {"status": "removed"}
+    await asyncio.to_thread(change_person, admin['slack_id'], slack_id, remove=True)
+    return {'status': 'deleted'}
 
 @app.get("/api/v1/slack/profile/{slack_id}")
 async def get_profile(slack_id: str, response: Response, user: dict = Depends(get_current_user)):
     response.headers["Cache-Control"] = "private, max-age=86400"
     return get_slack_profile(slack_id)
+
+@app.get('/api/health')
+async def health():
+    """Readiness for the native Vercel runtime, without exposing private state."""
+    proc = await asyncio.create_subprocess_exec(*vc_command(), '--version', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    stdout, _ = await asyncio.wait_for(proc.communicate(), 15)
+    if proc.returncode:
+        raise HTTPException(status_code=503, detail='Sandbox CLI unavailable')
+    await asyncio.to_thread(load_access)
+    return {'status':'ok', 'sandbox_cli':stdout.decode().strip(), 'ai_model':AI_MODEL, 'login_configured':bool(HC_CLIENT_ID and HC_CLIENT_SECRET)}

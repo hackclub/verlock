@@ -1,533 +1,146 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-    <title>Airlock Admin</title>
-    <style>
-        @font-face {
-            font-family: 'Phantom Sans';
-            src: url('https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Bold.woff') format('woff'),
-                 url('https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Bold.woff2') format('woff2');
-            font-weight: bold;
-            font-style: normal;
-            font-display: swap;
-        }
-
-        body {
-            font-family: sans-serif;
-            margin: 0;
-            padding: 0;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            min-height: 100vh;
-            background-color: #f4f4f4;
-            color: #333;
-            flex-direction: column;
-        }
-
-        .container {
-            background: white;
-            padding: 2rem;
-            border-radius: 8px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            width: 100%;
-            max-width: min(800px, 90vw);
-        }
-
-        h1, h2, h3 {
-            font-family: 'Phantom Sans', sans-serif;
-            margin-top: 0;
-        }
-
-        input[type="text"], input[type="number"] {
-            width: 100%;
-            padding: 10px;
-            margin: 10px 0;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-
-        button {
-            background-color: #ec3750;
-            color: white;
-            border: none;
-            padding: 10px 20px;
-            border-radius: 4px;
-            cursor: pointer;
-            font-family: 'Phantom Sans', sans-serif;
-            font-size: 1rem;
-        }
-
-        button.secondary {
-            background-color: #e0e0e0;
-            color: #333;
-        }
-
-        button.small {
-             padding: 5px 10px;
-             font-size: 0.8rem;
-        }
-        
-        button.remove {
-            background-color: #333;
-        }
-
-        button:hover {
-            opacity: 0.9;
-        }
-
-        .list-group {
-            list-style: none;
-            padding: 0;
-            margin-top: 20px;
-            border: 1px solid #eee;
-            border-radius: 4px;
-        }
-
-        .list-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px;
-            border-bottom: 1px solid #eee;
-            background: #fff;
-            cursor: pointer;
-        }
-        
-        .list-item:last-child {
-            border-bottom: none;
-        }
-
-        .list-item:hover {
-            background-color: #fafafa;
-        }
-
-        .form-row {
-            display: flex;
-            gap: 10px;
-            margin-bottom: 10px;
-        }
-
-        .profile-card {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .profile-card img {
-            width: 32px;
-            height: 32px;
-            border-radius: 4px;
-            background: #eee;
-        }
-        
-        .badge {
-            display: inline-block;
-            padding: 2px 6px;
-            border-radius: 4px;
-            font-size: 0.75rem;
-            background: #eee;
-            color: #555;
-            margin-left: 5px;
-        }
-
-        footer {
-            margin-top: 40px;
-            color: #666;
-            font-size: 0.9rem;
-            text-align: center;
-        }
-        
-        .section {
-            margin-bottom: 2rem;
-            padding-bottom: 2rem;
-            border-bottom: 1px solid #eee;
-        }
-
-        .hidden { display: none; }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <title>Verlock Admin</title>
+  <style>
+    @font-face { font-family:'Phantom Sans'; src:url('https://assets.hackclub.com/fonts/Phantom_Sans_0.7/Bold.woff2') format('woff2'); font-weight:700; font-display:swap; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#f4f4f4; color:#333; font-family:system-ui,sans-serif; }
+    main { max-width:1080px; margin:48px auto; padding:0 24px; }
+    header,.section-heading { display:flex; justify-content:space-between; align-items:center; gap:16px; }
+    h1,h2,button { font-family:'Phantom Sans',system-ui,sans-serif; }
+    h1 { margin:8px 0; font-size:32px; } h2 { margin:0; font-size:22px; }
+    a { color:#ec3750; } header a { text-decoration:none; }
+    p { line-height:1.5; } .muted { color:#666; } .subtitle { margin-top:0; }
+    section { background:#fff; border:1px solid #e5e5e5; border-radius:8px; margin-top:24px; padding:24px; box-shadow:0 2px 5px #00000005; }
+    .section-heading { margin-bottom:12px; } .count { font-family:system-ui,sans-serif; font-size:14px; color:#666; font-weight:400; margin-left:8px; }
+    button { border:0; border-radius:4px; background:#ec3750; color:#fff; padding:10px 16px; cursor:pointer; font-size:15px; }
+    button.secondary { background:#eee; color:#333; } button.danger { background:#fff0f2; color:#b52039; }
+    button:disabled { opacity:.5; cursor:default; } button:focus-visible,a:focus-visible { outline:3px solid #338eda; outline-offset:3px; }
+    input,select { padding:10px 12px; border:1px solid #ccc; border-radius:4px; font:inherit; width:100%; background:#fff; color:#333; }
+    input:focus,select:focus { outline:2px solid #338eda; outline-offset:1px; }
+    label { font-size:14px; display:block; margin-bottom:6px; }
+    form { display:grid; grid-template-columns:minmax(160px,1fr) 160px auto; align-items:end; gap:12px; margin:24px 0 12px; }
+    .message { font-size:14px; min-height:22px; margin:8px 0; } .message.error { color:#b52039; }
+    .empty { padding:20px 0 4px; color:#666; }
+    .sandbox { display:grid; grid-template-columns:minmax(0,2fr) repeat(3,minmax(0,1fr)); gap:20px; padding:18px 0; border-top:1px solid #eee; }
+    .sandbox strong,.person strong { display:block; overflow-wrap:anywhere; font-size:14px; }
+    .sandbox small { display:block; color:#666; margin-top:6px; overflow-wrap:anywhere; }
+    .sandbox dt { font-size:12px; color:#666; margin-bottom:5px; } .sandbox dd { margin:0; font-size:14px; } dl { margin:0; }
+    .people { list-style:none; padding:0; margin:16px 0 0; }
+    .person { display:flex; justify-content:space-between; align-items:center; gap:16px; border-top:1px solid #eee; padding:16px 0; }
+    .person-details { min-width:0; } .person small { color:#666; display:block; margin-top:5px; overflow-wrap:anywhere; }
+    .person-actions { display:flex; align-items:center; gap:10px; } .person-actions select { width:130px; }
+    .badge { display:inline-block; margin:0 0 6px; padding:3px 8px; background:#eee; border-radius:12px; font-size:12px; }
+    [hidden] { display:none !important; }
+    @media(max-width:640px) { main { margin:24px auto; padding:0 16px; } section { padding:18px; } header { align-items:flex-start; } form { grid-template-columns:1fr 120px; } form button { grid-column:1/-1; } .sandbox { grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; } .sandbox .workspace { grid-column:1/-1; } .person { align-items:flex-start; flex-direction:column; gap:12px; } .person-actions { width:100%; } .person-actions select { flex:1; } }
+  </style>
 </head>
 <body>
-
-    <div class="container" id="app">
-        <h1>Admin Dashboard</h1>
-        <div id="loading">Loading...</div>
-
-        <!-- Global Admin View -->
-        <div id="global-admin-view" class="hidden">
-            <div class="section">
-                <h3>Organizations</h3>
-                <div class="form-row">
-                    <input type="text" id="new-org-name" placeholder="Organization Name">
-                    <input type="text" id="new-org-kasm-id" placeholder="KASM User ID (optional)">
-                    <button onclick="createOrganization()">Create Org</button>
-                </div>
-                <ul class="list-group" id="org-list"></ul>
-            </div>
-
-            <div class="section">
-                <h3>Global Access Users</h3>
-                <p style="font-size: 0.9em; color: #666;">Users with access outside of organizations.</p>
-                <div class="form-row">
-                    <input type="text" id="new-global-slack-id" placeholder="Slack ID (e.g. U123456)">
-                    <button onclick="addGlobalUser()">Add User</button>
-                </div>
-                <ul class="list-group" id="global-user-list"></ul>
-            </div>
-        </div>
-
-        <!-- Organization View -->
-        <div id="org-view" class="hidden">
-            <button class="secondary small" onclick="showDashboard()">&larr; Back to Dashboard</button>
-            <h2 id="org-title" style="margin-top: 1rem;">Organization</h2>
-            
-            <div id="org-settings" class="section hidden">
-                <h3>Settings</h3>
-                <div class="form-row">
-                    <input type="text" id="edit-org-name" placeholder="Name">
-                    <input type="number" id="edit-org-limit" placeholder="Session Limit">
-                </div>
-                <div class="form-row">
-                    <input type="text" id="edit-org-kasm-id" placeholder="KASM User ID">
-                </div>
-                <button onclick="updateOrganization()">Save Settings</button>
-            </div>
-
-            <div class="section">
-                <h3>Admins</h3>
-                <div class="form-row">
-                    <input type="text" id="new-org-admin-id" placeholder="Slack ID">
-                    <button onclick="addOrgUser('admin')">Add Admin</button>
-                </div>
-                <ul class="list-group" id="org-admin-list"></ul>
-            </div>
-
-            <div class="section">
-                <h3>Users</h3>
-                <div class="form-row">
-                    <input type="text" id="new-org-user-id" placeholder="Slack ID">
-                    <button onclick="addOrgUser('user')">Add User</button>
-                </div>
-                <ul class="list-group" id="org-user-list"></ul>
-            </div>
-        </div>
-
-        <div style="margin-top: 20px;">
-            <a href="/" style="color: #ec3750; text-decoration: none;">&larr; Back to App</a>
-        </div>
-    </div>
-
-    <footer id="footer-links">
-        Airlock Private Beta &bull; Made with love by Carlos
-    </footer>
-
-    <script>
-        // State
-        let currentUser = null;
-        let currentOrg = null;
-        let profileCache = {};
-
-        // DOM Elements
-        const views = {
-            loading: document.getElementById('loading'),
-            global: document.getElementById('global-admin-view'),
-            org: document.getElementById('org-view')
-        };
-        
-        // Init
-        async function init() {
-            try {
-                const res = await fetch('/api/v1/me');
-                const data = await res.json();
-                currentUser = data.user;
-                
-                updateFooter();
-                
-                // Check URL params
-                const params = new URLSearchParams(window.location.search);
-                const targetOrgId = params.get('org');
-
-                if (currentUser.is_admin) {
-                    if (targetOrgId) {
-                        loadOrgView(targetOrgId);
-                    } else {
-                        loadGlobalDashboard();
-                    }
-                } else if (currentUser.organization) {
-                    loadOrgView(currentUser.organization.id);
-                } else if (currentUser.is_org_admin) {
-                     if (currentUser.organization) {
-                         loadOrgView(currentUser.organization.id);
-                     } else {
-                         alert("You are an org admin but no organization found.");
-                     }
-                } else {
-                    alert("Access Denied");
-                    window.location.href = "/";
-                }
-            } catch (e) {
-                console.error(e);
-                alert("Failed to load user info");
-            }
-        }
-
-        function updateFooter() {
-            const footer = document.getElementById('footer-links');
-            let links = [];
-            if (currentUser.is_admin) {
-                links.push('<a href="/admin">Global Airlock Admin</a>');
-            }
-            if (currentUser.organization && (currentUser.organization.admins.includes(currentUser.slack_id) || currentUser.is_admin)) {
-                 links.push(`<a href="#" onclick="loadOrgView('${currentUser.organization.id}'); return false;">${currentUser.organization.name} Admin</a>`);
-            }
-            
-            if (links.length > 0) {
-                footer.innerHTML = `Airlock Private Beta &bull; ${links.join(" &bull; ")}`;
-            }
-        }
-
-        // Global Dashboard
-        async function loadGlobalDashboard() {
-            showView('global');
-            fetchOrganizations();
-            fetchGlobalUsers();
-        }
-
-        async function fetchOrganizations() {
-            const res = await fetch('/api/v1/admin/organizations');
-            const orgs = await res.json();
-            const list = document.getElementById('org-list');
-            list.innerHTML = '';
-            
-            orgs.forEach(org => {
-                const li = document.createElement('li');
-                li.className = 'list-item';
-                li.onclick = () => loadOrgView(org.id);
-                li.innerHTML = `
-                    <strong>${org.name}</strong>
-                    <span style="color:#888; font-size: 0.9em">Limit: ${org.session_limit}</span>
-                `;
-                list.appendChild(li);
-            });
-        }
-
-        async function createOrganization() {
-            const name = document.getElementById('new-org-name').value;
-            const kasmId = document.getElementById('new-org-kasm-id').value;
-            
-            if (!name) return alert("Name is required");
-
-            const res = await fetch('/api/v1/admin/organizations', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    id: crypto.randomUUID(),
-                    name: name, 
-                    kasm_user_id: kasmId || null
-                })
-            });
-            
-            if (res.ok) {
-                document.getElementById('new-org-name').value = '';
-                fetchOrganizations();
-            } else {
-                alert("Failed to create org");
-            }
-        }
-
-        async function fetchGlobalUsers() {
-            const res = await fetch('/api/v1/admin/users');
-            const users = await res.json();
-            const list = document.getElementById('global-user-list');
-            list.innerHTML = '';
-            
-            for (const user of users) {
-                const profile = await getProfile(user.slack_id);
-                const li = document.createElement('li');
-                li.className = 'list-item';
-                li.innerHTML = `
-                    <div class="profile-card">
-                        <img src="${profile.image || 'https://via.placeholder.com/32'}" />
-                        <div>
-                            <div>${profile.display_name}</div>
-                            <small style="color:#888">${user.slack_id}</small>
-                        </div>
-                    </div>
-                    <button class="small remove" onclick="removeGlobalUser('${user.slack_id}')">Remove</button>
-                `;
-                list.appendChild(li);
-            }
-        }
-
-        async function addGlobalUser() {
-            const id = document.getElementById('new-global-slack-id').value;
-            if (!id) return;
-            await fetch('/api/v1/admin/users', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({slack_id: id})
-            });
-            document.getElementById('new-global-slack-id').value = '';
-            fetchGlobalUsers();
-        }
-
-        async function removeGlobalUser(id) {
-            if(!confirm("Remove user?")) return;
-            await fetch(`/api/v1/admin/users/${id}`, {method: 'DELETE'});
-            fetchGlobalUsers();
-        }
-
-        // Organization View
-        async function loadOrgView(orgId) {
-            showView('loading');
-            try {
-                const res = await fetch(`/api/v1/admin/organizations/${orgId}`);
-                if (!res.ok) throw new Error("Failed to load org");
-                currentOrg = await res.json();
-                
-                document.getElementById('org-title').innerText = currentOrg.name;
-                
-                // Show settings only if global admin
-                const settingsDiv = document.getElementById('org-settings');
-                if (currentUser.is_admin) {
-                    settingsDiv.classList.remove('hidden');
-                    document.getElementById('edit-org-name').value = currentOrg.name;
-                    document.getElementById('edit-org-limit').value = currentOrg.session_limit;
-                    document.getElementById('edit-org-kasm-id').value = currentOrg.kasm_user_id;
-                } else {
-                    settingsDiv.classList.add('hidden');
-                }
-
-                renderOrgUsers();
-                showView('org');
-            } catch (e) {
-                alert(e.message);
-                if (currentUser.is_admin) showDashboard();
-            }
-        }
-
-        async function updateOrganization() {
-            const name = document.getElementById('edit-org-name').value;
-            const limit = parseInt(document.getElementById('edit-org-limit').value);
-            const kasmId = document.getElementById('edit-org-kasm-id').value;
-
-            await fetch(`/api/v1/admin/organizations/${currentOrg.id}`, {
-                method: 'PUT',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({
-                    name: name,
-                    session_limit: limit,
-                    kasm_user_id: kasmId
-                })
-            });
-            alert("Updated!");
-            loadOrgView(currentOrg.id);
-        }
-
-        async function renderOrgUsers() {
-            const adminList = document.getElementById('org-admin-list');
-            const userList = document.getElementById('org-user-list');
-            adminList.innerHTML = '';
-            userList.innerHTML = '';
-
-            // Admins
-            for (const id of currentOrg.admins) {
-                const profile = await getProfile(id);
-                const li = document.createElement('li');
-                li.className = 'list-item';
-                li.innerHTML = `
-                    <div class="profile-card">
-                        <img src="${profile.image || 'https://via.placeholder.com/32'}" />
-                        <div>
-                            <div>${profile.display_name} <span class="badge">Admin</span></div>
-                            <small style="color:#888">${id}</small>
-                        </div>
-                    </div>
-                    <button class="small remove" onclick="removeOrgUser('${id}')">Remove</button>
-                `;
-                adminList.appendChild(li);
-            }
-
-            // Users
-            for (const id of currentOrg.users) {
-                const profile = await getProfile(id);
-                const li = document.createElement('li');
-                li.className = 'list-item';
-                li.innerHTML = `
-                    <div class="profile-card">
-                        <img src="${profile.image || 'https://via.placeholder.com/32'}" />
-                        <div>
-                            <div>${profile.display_name}</div>
-                            <small style="color:#888">${id}</small>
-                        </div>
-                    </div>
-                    <button class="small remove" onclick="removeOrgUser('${id}')">Remove</button>
-                `;
-                userList.appendChild(li);
-            }
-        }
-
-        async function addOrgUser(role) {
-            const inputId = role === 'admin' ? 'new-org-admin-id' : 'new-org-user-id';
-            const id = document.getElementById(inputId).value;
-            if (!id) return;
-
-            const res = await fetch(`/api/v1/admin/organizations/${currentOrg.id}/users`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({slack_id: id, role: role})
-            });
-
-            if (res.ok) {
-                document.getElementById(inputId).value = '';
-                loadOrgView(currentOrg.id);
-            } else {
-                alert("Failed to add user");
-            }
-        }
-
-        async function removeOrgUser(id) {
-            if(!confirm("Remove user from organization?")) return;
-            await fetch(`/api/v1/admin/organizations/${currentOrg.id}/users/${id}`, {
-                method: 'DELETE'
-            });
-            loadOrgView(currentOrg.id);
-        }
-
-        // Helpers
-        async function getProfile(slackId) {
-            if (profileCache[slackId]) return profileCache[slackId];
-            try {
-                const res = await fetch(`/api/v1/slack/profile/${slackId}`);
-                const data = await res.json();
-                profileCache[slackId] = data;
-                return data;
-            } catch {
-                return {display_name: slackId, image: null};
-            }
-        }
-
-        function showDashboard() {
-            if (currentUser.is_admin) {
-                loadGlobalDashboard();
-            } else {
-                // If not global admin, they shouldn't be able to "go back" to dashboard from org view
-                // unless we have a specific dashboard for them.
-                // For now, reload their org view.
-                loadOrgView(currentUser.organization.id);
-            }
-        }
-
-        function showView(viewName) {
-            Object.values(views).forEach(el => el.classList.add('hidden'));
-            views[viewName].classList.remove('hidden');
-        }
-
-        init();
-    </script>
+<main>
+  <header><div><h1>Admin dashboard</h1><p class="subtitle muted">Review workspaces and manage access.</p></div><a href="/">Back to Airlock</a></header>
+  <p id="access-message" role="status">Checking admin access…</p>
+  <a id="login-link" href="/login" hidden>Log in with Hack Club</a>
+  <div id="dashboard" hidden>
+    <section aria-labelledby="sandboxes-heading">
+      <div class="section-heading"><h2 id="sandboxes-heading">Running sandboxes <span id="sandbox-count" class="count"></span></h2><button id="refresh-sandboxes" class="secondary" type="button">Refresh sandboxes</button></div>
+      <p id="sandbox-message" class="message" role="status"></p>
+      <div id="sandboxes" aria-live="polite"></div>
+    </section>
+    <section aria-labelledby="people-heading">
+      <div class="section-heading"><h2 id="people-heading">People with access <span id="people-count" class="count"></span></h2><button id="refresh-people" class="secondary" type="button">Refresh people</button></div>
+      <p class="muted">Members can start review sessions. Admins also manage access and view running sandboxes.</p>
+      <form id="add-person">
+        <div><label for="slack-id">Slack member ID</label><input id="slack-id" name="slack_id" placeholder="U123456789" pattern="[UW][A-Z0-9]{5,31}" required autocomplete="off"></div>
+        <div><label for="new-role">Role</label><select id="new-role"><option value="member">Member</option><option value="admin">Admin</option></select></div>
+        <button id="add-button" type="submit">Add person</button>
+      </form>
+      <p id="people-message" class="message" role="status"></p>
+      <ul id="people" class="people"></ul>
+    </section>
+  </div>
+</main>
+<script>
+  const byId = id => document.getElementById(id);
+  let currentUser, people = [], peopleBusy = false, sandboxBusy = false;
+  function node(tag, text, className) { const el=document.createElement(tag); if(text !== undefined)el.textContent=text; if(className)el.className=className; return el; }
+  function message(id, text, error=false) { const el=byId(id); el.textContent=text; el.classList.toggle('error',error); }
+  function deny(text, login=false) { byId('dashboard').hidden=true; byId('access-message').hidden=false; byId('access-message').textContent=text; byId('login-link').hidden=!login; }
+  async function api(path, options={}) {
+    const response=await fetch(path,{cache:'no-store',...options,headers:{'Content-Type':'application/json',...options.headers}});
+    const body=await response.json().catch(()=>({}));
+    if(!response.ok) {
+      if(response.status===401)deny('Log in with an admin account to manage Verlock.',true);
+      if(response.status===403)deny('Admin access is required to manage Verlock.');
+      const error=new Error(typeof body.detail==='string'?body.detail:response.status===422?'Enter a valid Slack member ID and role.':'The request failed. Please retry.'); error.status=response.status; throw error;
+    }
+    return body;
+  }
+  async function checkAccess() {
+    try {
+      const data=await api('/api/v1/me'); currentUser=data.user;
+      if(!currentUser.is_admin) { deny('Admin access is required to manage Verlock.'); return false; }
+      byId('access-message').hidden=true; byId('login-link').hidden=true; byId('dashboard').hidden=false; return true;
+    } catch(error) { if(![401,403].includes(error.status))deny(error.message); return false; }
+  }
+  async function refreshSandboxes() {
+    if(sandboxBusy)return; sandboxBusy=true; byId('refresh-sandboxes').disabled=true; message('sandbox-message','Loading running sandboxes…');
+    try {
+      const sandboxes=await api('/api/v1/admin/sandboxes'); byId('sandboxes').replaceChildren(); byId('sandbox-count').textContent=`(${sandboxes.length})`;
+      if(!sandboxes.length)byId('sandboxes').append(node('p','No running sandboxes.','empty'));
+      for(const sandbox of sandboxes) {
+        const row=node('article',undefined,'sandbox'), workspace=node('div',undefined,'workspace'); workspace.append(node('strong',sandbox.name));
+        if(sandbox.repo_url) { const link=node('a',sandbox.repo_url.replace('https://github.com/','')); link.href=sandbox.repo_url; link.target='_blank'; link.rel='noopener noreferrer'; workspace.append(link); }
+        workspace.append(node('small',`Owner: ${sandbox.owner || 'Not recorded'}`)); row.append(workspace);
+        for(const [label,value] of [['Started',sandbox.created],['Expires',sandbox.expires],['Resources',`${sandbox.vcpus} vCPU · ${sandbox.memory} · ${sandbox.region}`]]) { const list=node('dl'); list.append(node('dt',label),node('dd',value)); row.append(list); }
+        byId('sandboxes').append(row);
+      }
+      message('sandbox-message','');
+    } catch(error) { message('sandbox-message',error.message,true); }
+    finally { sandboxBusy=false; byId('refresh-sandboxes').disabled=false; }
+  }
+  function lockPeople(locked) { peopleBusy=locked; for(const el of byId('add-person').elements)el.disabled=locked; byId('refresh-people').disabled=locked; renderPeople(); }
+  function renderPeople() {
+    byId('people').replaceChildren(); byId('people-count').textContent=`(${people.length})`;
+    if(!people.length)byId('people').append(node('li','No people have access.','empty'));
+    const admins=people.filter(p=>p.role==='admin').length;
+    for(const person of [...people].sort((a,b)=>a.role.localeCompare(b.role)||a.slack_id.localeCompare(b.slack_id))) {
+      const row=node('li',undefined,'person'), details=node('div',undefined,'person-details'), actions=node('div',undefined,'person-actions');
+      details.append(node('span',person.role==='admin'?'Admin':'Member','badge'),node('strong',person.slack_id));
+      if(person.email)details.append(node('small',person.email));
+      if(person.slack_id===currentUser.slack_id)details.append(node('small','You'));
+      const lastAdmin=person.role==='admin'&&admins===1;
+      const select=node('select'); select.setAttribute('aria-label',`Role for ${person.slack_id}`);
+      for(const role of ['member','admin']) { const option=node('option',role==='admin'?'Admin':'Member'); option.value=role; select.append(option); }
+      select.value=person.role; select.disabled=peopleBusy||lastAdmin;
+      select.addEventListener('change',()=>mutatePeople(`/api/v1/admin/users/${person.slack_id}`,{method:'PATCH',body:JSON.stringify({role:select.value})},'Role updated.'));
+      const remove=node('button','Remove','danger'); remove.type='button'; remove.setAttribute('aria-label',`Remove ${person.slack_id}`); remove.disabled=peopleBusy||lastAdmin;
+      remove.addEventListener('click',()=>{if(confirm(`Remove access for ${person.slack_id}?`))mutatePeople(`/api/v1/admin/users/${person.slack_id}`,{method:'DELETE'},'Access removed.');});
+      actions.append(select,remove); if(lastAdmin)details.append(node('small','At least one admin is required.')); row.append(details,actions); byId('people').append(row);
+    }
+  }
+  async function refreshPeople() {
+    if(peopleBusy)return; lockPeople(true); message('people-message','Loading people…');
+    try { people=await api('/api/v1/admin/users'); message('people-message',''); }
+    catch(error) { message('people-message',error.message,true); }
+    finally { lockPeople(false); }
+  }
+  async function mutatePeople(path, options, success) {
+    if(peopleBusy)return; lockPeople(true); message('people-message','Saving…');
+    try {
+      await api(path,options);
+      if(!await checkAccess())return;
+      people=await api('/api/v1/admin/users'); message('people-message',success);
+      if(options.method==='POST')byId('add-person').reset();
+    } catch(error) { message('people-message',error.message,true); }
+    finally { lockPeople(false); }
+  }
+  byId('add-person').addEventListener('submit',event=>{event.preventDefault();mutatePeople('/api/v1/admin/users',{method:'POST',body:JSON.stringify({slack_id:byId('slack-id').value.trim(),role:byId('new-role').value})},'Access added.');});
+  byId('refresh-sandboxes').addEventListener('click',refreshSandboxes); byId('refresh-people').addEventListener('click',refreshPeople);
+  (async()=>{if(await checkAccess())await Promise.all([refreshSandboxes(),refreshPeople()]);})();
+</script>
 </body>
 </html>
