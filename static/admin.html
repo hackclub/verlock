@@ -43,6 +43,14 @@
     #slack-preview { min-height:24px; margin:0 0 4px; }
     .badge { display:inline-block; margin:0 0 6px; padding:3px 8px; background:#eee; border-radius:12px; font-size:12px; }
     [hidden] { display:none !important; }
+    :root { color-scheme:light dark; }
+    @media(prefers-color-scheme:dark) {
+      body { background:#17171d; color:#e0e0e0; } section { background:#252429; border-color:#3a3940; box-shadow:none; }
+      .muted,.count,.empty,.sandbox small,.sandbox dt,.person small,.identity .real-name,.identity small { color:#a0a0a0; }
+      button.secondary,.badge,.avatar { background:#3a3940; color:#e0e0e0; } button.danger { background:#4a1d26; color:#ff9aaa; }
+      input,select { background:#1c1b20; color:#e0e0e0; border-color:#444; }
+      .sandbox,.person { border-top-color:#3a3940; } .message.error,.unknown { color:#ff7a8e !important; }
+    }
     @media(max-width:640px) { main { margin:24px auto; padding:0 16px; } section { padding:18px; } header { align-items:flex-start; } form { grid-template-columns:1fr 120px; } form button { grid-column:1/-1; } .sandbox { grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; } .sandbox .workspace { grid-column:1/-1; } .person { align-items:flex-start; flex-direction:column; gap:12px; } .person-actions { width:100%; } .person-actions select { flex:1; } }
   </style>
 </head>

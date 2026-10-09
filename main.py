@@ -632,6 +632,7 @@ async def auth_callback(request: Request):
                  <head>
                     <title>Airlock | Access Denied</title>
                     <style>
+                        :root { color-scheme: light dark; }
                         body { display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; margin: 0; font-family: sans-serif; padding: 40px; text-align: center; }
                         .btn { display: inline-block; background: #ec3750; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; margin-top: 20px; }
                     </style>
@@ -655,8 +656,9 @@ async def auth_callback(request: Request):
                 <head>
                     <title>Verlock | Access Denied</title>
                     <style>
+                        :root {{ color-scheme: light dark; }}
                         body {{ display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; margin: 0; font-family: sans-serif; padding: 40px; text-align: center; box-sizing: border-box; }}
-                        code {{ font-size: 1.2em; background: #f1f1f1; padding: 4px 8px; border-radius: 4px; user-select: all; }}
+                        code {{ font-size: 1.2em; background: rgba(127, 127, 127, 0.2); padding: 4px 8px; border-radius: 4px; user-select: all; }}
                         .btn {{ display: inline-block; background: #ec3750; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; margin-top: 20px; }}
                     </style>
                 </head>

@@ -115,6 +115,26 @@
              align-items: center;
              gap: 10px;
         }
+
+        #popup-warning {
+            background: #fff3cd;
+            color: #856404;
+            padding: 1rem;
+            margin-top: 1rem;
+            border-radius: 4px;
+            border: 1px solid #ffeeba;
+        }
+
+        :root { color-scheme: light dark; }
+
+        @media (prefers-color-scheme: dark) {
+            body { background-color: #17171d; color: #e0e0e0; }
+            .container { background: #252429; box-shadow: 0 4px 6px rgba(0,0,0,0.4); }
+            input[type="text"] { background: #1c1b20; color: #e0e0e0; border-color: #444; }
+            #output { background: #111; }
+            .user-info, footer { color: #a0a0a0; }
+            #popup-warning { background: #3a3218; color: #f5d77a; border-color: #6b5a1f; }
+        }
     </style>
 </head>
 <body>
@@ -133,7 +153,7 @@
             <input type="text" id="repo-url" placeholder="https://github.com/owner/repo" required>
             <button type="submit">Start Session</button>
         </form>
-        <div id="popup-warning" class="hidden" style="background: #fff3cd; color: #856404; padding: 1rem; margin-top: 1rem; border-radius: 4px; border: 1px solid #ffeeba;">
+        <div id="popup-warning" class="hidden">
             <strong>Popup Blocked!</strong> The session is ready, but your browser blocked the window.
             <br>
             <a id="manual-launch-btn" href="#" target="_blank" style="background: #ec3750; color: white; padding: 5px 10px; text-decoration: none; border-radius: 4px; display: inline-block; margin-top: 5px;">Open Session</a>
