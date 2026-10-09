@@ -34,6 +34,13 @@
     .person { display:flex; justify-content:space-between; align-items:center; gap:16px; border-top:1px solid #eee; padding:16px 0; }
     .person-details { min-width:0; } .person small { color:#666; display:block; margin-top:5px; overflow-wrap:anywhere; }
     .person-actions { display:flex; align-items:center; gap:10px; } .person-actions select { width:130px; }
+    .identity { display:flex; align-items:center; gap:12px; min-width:0; } .identity-text { min-width:0; }
+    .identity strong a { color:inherit; text-decoration:none; } .identity strong a:hover { text-decoration:underline; }
+    .identity .real-name { color:#666; font-weight:400; } .identity small { display:block; color:#666; margin-top:5px; overflow-wrap:anywhere; }
+    .avatar { width:44px; height:44px; flex:none; border-radius:8px; object-fit:cover; background:#eee; }
+    .identity.compact { gap:8px; margin-top:8px; } .identity.compact .avatar { width:24px; height:24px; border-radius:6px; } .identity.compact small { margin-top:2px; }
+    .slack-id { font-family:ui-monospace,monospace; } .unknown { color:#b52039 !important; }
+    #slack-preview { min-height:24px; margin:0 0 4px; }
     .badge { display:inline-block; margin:0 0 6px; padding:3px 8px; background:#eee; border-radius:12px; font-size:12px; }
     [hidden] { display:none !important; }
     @media(max-width:640px) { main { margin:24px auto; padding:0 16px; } section { padding:18px; } header { align-items:flex-start; } form { grid-template-columns:1fr 120px; } form button { grid-column:1/-1; } .sandbox { grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; } .sandbox .workspace { grid-column:1/-1; } .person { align-items:flex-start; flex-direction:column; gap:12px; } .person-actions { width:100%; } .person-actions select { flex:1; } }
@@ -58,6 +65,7 @@
         <div><label for="new-role">Role</label><select id="new-role"><option value="member">Member</option><option value="admin">Admin</option></select></div>
         <button id="add-button" type="submit">Add person</button>
       </form>
+      <div id="slack-preview" aria-live="polite"></div>
       <p id="people-message" class="message" role="status"></p>
       <ul id="people" class="people"></ul>
     </section>
@@ -67,6 +75,29 @@
   const byId = id => document.getElementById(id);
   let currentUser, people = [], peopleBusy = false, sandboxBusy = false;
   function node(tag, text, className) { const el=document.createElement(tag); if(text !== undefined)el.textContent=text; if(className)el.className=className; return el; }
+  const profiles=new Map();
+  function lookup(id) {
+    if(!profiles.has(id))profiles.set(id,fetch(`https://cachet.hackclub.com/users/${encodeURIComponent(id)}`)
+      .then(r=>{ if(!r.ok)throw new Error(); return r.json(); })
+      .then(p=>p.type==='user'?p:{missing:true})
+      .catch(()=>{ profiles.delete(id); return null; }));
+    return profiles.get(id);
+  }
+  function identity(id, {compact=false, before=[]}={}) {
+    const wrap=node('div',undefined,compact?'identity compact':'identity'), avatar=node('img',undefined,'avatar'), text=node('div',undefined,'identity-text');
+    const name=node('strong',id), meta=node('small'); meta.append(node('span',id,'slack-id'));
+    avatar.alt=''; text.append(...before,name,meta); wrap.append(avatar,text);
+    lookup(id).then(profile=>{
+      if(!profile)return;
+      if(profile.missing) { meta.append(' · Not found in Hack Club Slack'); meta.classList.add('unknown'); return; }
+      const link=node('a',profile.displayName||profile.realName||id); link.href=`https://hackclub.slack.com/team/${encodeURIComponent(id)}`; link.target='_blank'; link.rel='noopener noreferrer';
+      name.replaceChildren(link);
+      if(profile.realName&&profile.realName!==profile.displayName)name.append(node('span',` (${profile.realName})`,'real-name'));
+      if(profile.pronouns)meta.append(` · ${profile.pronouns}`);
+      if(/^https:\/\//.test(profile.imageUrl||'')) avatar.src=profile.imageUrl;
+    });
+    return wrap;
+  }
   function message(id, text, error=false) { const el=byId(id); el.textContent=text; el.classList.toggle('error',error); }
   function deny(text, login=false) { byId('dashboard').hidden=true; byId('access-message').hidden=false; byId('access-message').textContent=text; byId('login-link').hidden=!login; }
   async function api(path, options={}) {
@@ -94,7 +125,7 @@
       for(const sandbox of sandboxes) {
         const row=node('article',undefined,'sandbox'), workspace=node('div',undefined,'workspace'); workspace.append(node('strong',sandbox.name));
         if(sandbox.repo_url) { const link=node('a',sandbox.repo_url.replace('https://github.com/','')); link.href=sandbox.repo_url; link.target='_blank'; link.rel='noopener noreferrer'; workspace.append(link); }
-        workspace.append(node('small',`Owner: ${sandbox.owner || 'Not recorded'}`)); row.append(workspace);
+        workspace.append(sandbox.owner?identity(sandbox.owner,{compact:true}):node('small','Owner: Not recorded')); row.append(workspace);
         for(const [label,value] of [['Started',sandbox.created],['Expires',sandbox.expires],['Resources',`${sandbox.vcpus} vCPU · ${sandbox.memory} · ${sandbox.region}`]]) { const list=node('dl'); list.append(node('dt',label),node('dd',value)); row.append(list); }
         byId('sandboxes').append(row);
       }
@@ -109,9 +140,10 @@
     const admins=people.filter(p=>p.role==='admin').length;
     for(const person of [...people].sort((a,b)=>a.role.localeCompare(b.role)||a.slack_id.localeCompare(b.slack_id))) {
       const row=node('li',undefined,'person'), details=node('div',undefined,'person-details'), actions=node('div',undefined,'person-actions');
-      details.append(node('span',person.role==='admin'?'Admin':'Member','badge'),node('strong',person.slack_id));
-      if(person.email)details.append(node('small',person.email));
-      if(person.slack_id===currentUser.slack_id)details.append(node('small','You'));
+      const card=identity(person.slack_id,{before:[node('span',person.role==='admin'?'Admin':'Member','badge')]}), text=card.querySelector('.identity-text');
+      if(person.email)text.append(node('small',person.email));
+      if(person.slack_id===currentUser.slack_id)text.append(node('small','You'));
+      details.append(card);
       const lastAdmin=person.role==='admin'&&admins===1;
       const select=node('select'); select.setAttribute('aria-label',`Role for ${person.slack_id}`);
       for(const role of ['member','admin']) { const option=node('option',role==='admin'?'Admin':'Member'); option.value=role; select.append(option); }
@@ -119,7 +151,7 @@
       select.addEventListener('change',()=>mutatePeople(`/api/v1/admin/users/${person.slack_id}`,{method:'PATCH',body:JSON.stringify({role:select.value})},'Role updated.'));
       const remove=node('button','Remove','danger'); remove.type='button'; remove.setAttribute('aria-label',`Remove ${person.slack_id}`); remove.disabled=peopleBusy||lastAdmin;
       remove.addEventListener('click',()=>{if(confirm(`Remove access for ${person.slack_id}?`))mutatePeople(`/api/v1/admin/users/${person.slack_id}`,{method:'DELETE'},'Access removed.');});
-      actions.append(select,remove); if(lastAdmin)details.append(node('small','At least one admin is required.')); row.append(details,actions); byId('people').append(row);
+      actions.append(select,remove); if(lastAdmin)card.querySelector('.identity-text').append(node('small','At least one admin is required.')); row.append(details,actions); byId('people').append(row);
     }
   }
   async function refreshPeople() {
@@ -139,6 +171,13 @@
     finally { lockPeople(false); }
   }
   byId('add-person').addEventListener('submit',event=>{event.preventDefault();mutatePeople('/api/v1/admin/users',{method:'POST',body:JSON.stringify({slack_id:byId('slack-id').value.trim(),role:byId('new-role').value})},'Access added.');});
+  let previewTimer;
+  byId('slack-id').addEventListener('input',()=>{
+    clearTimeout(previewTimer); byId('slack-preview').replaceChildren();
+    const id=byId('slack-id').value.trim();
+    if(byId('slack-id').checkValidity()&&id)previewTimer=setTimeout(()=>byId('slack-preview').replaceChildren(identity(id,{compact:true})),300);
+  });
+  byId('add-person').addEventListener('reset',()=>{clearTimeout(previewTimer); byId('slack-preview').replaceChildren();});
   byId('refresh-sandboxes').addEventListener('click',refreshSandboxes); byId('refresh-people').addEventListener('click',refreshPeople);
   (async()=>{if(await checkAccess())await Promise.all([refreshSandboxes(),refreshPeople()]);})();
 </script>

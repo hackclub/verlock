@@ -78,7 +78,7 @@ Kasm Workspaces' external broker, broker-managed sharing, and persistent profile
 
 Open https://verlock.hackclub.dev/admin as an admin. The dashboard lists running sandboxes for Hack Club/verlock, including start/expiration, resources, and recorded owner/repository. Refresh fetches the current Vercel CLI inventory.
 
-People with access is one list with **Member** and **Admin** roles. Add a Slack member ID, choose a role, or change/remove an existing person. Members can start review sessions; admins can also manage access and view running sandboxes. Changes persist immediately without redeploying. At least one admin must remain, and access is rechecked on the server even for already-signed-in users.
+People with access is one list with **Member** and **Admin** roles. Add a Slack member ID, choose a role, or change/remove an existing person. Members can start review sessions; admins can also manage access and view running sandboxes. People and sandbox owners show Slack names, avatars, and pronouns from the public [Cachet](https://cachet.hackclub.com/) profile cache, and the add form previews whose ID was entered; IDs Cachet cannot find are flagged. Changes persist immediately without redeploying. At least one admin must remain, and access is rechecked on the server even for already-signed-in users.
 
 `ADMIN_USERS` only seeds the list on first initialization; subsequent role changes belong in the dashboard. Organization APIs and implicit Slack-channel access are retired. Access edits use conditional Blob writes to avoid overwriting concurrent changes.
 
