@@ -41,7 +41,7 @@ uv run uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
 
 Register the control plane's `/auth` callback URL with Hack Club Auth. It retains Hack Club login, GitHub analysis, configurable AI providers, and the streamed session UI. The backend rechecks authorization before creating a VM. Access uses a single member/admin allowlist.
 
-Production is hosted natively at **https://verlock.hackclub.dev** with Vercel FastAPI functions in `iad1`. The canonical access list and session ownership live in the private `verlock-state` Blob store, so they survive function restarts. Local development uses ignored `access.json` and session JSON files. Legacy users and organization roles are flattened once into the canonical list, preserving admins and deduplicating Slack IDs. The new Auth application requests only `openid slack_id` and uses `https://verlock.hackclub.dev/auth`. Credentials are Vercel secrets. Vercel's per-request OIDC header authenticates Sandbox, Gateway, and Blob operations (Blob through `BLOB_STORE_ID`); it is passed only to local CLI and Blob helper subprocesses, never into review VMs.
+Production is hosted natively at **https://verlock.hackclub.dev** with Vercel FastAPI functions in `iad1`. The canonical access list and session ownership live in the private `verlock-state` Blob store, so they survive function restarts. Local development uses ignored `access.json` and session JSON files. Legacy users and organization roles are flattened once into the canonical list, preserving admins and deduplicating Slack IDs. The new Auth application requests only `openid slack_id` and uses `https://verlock.hackclub.dev/auth`. Credentials are Vercel secrets. Vercel's per-request OIDC header authenticates Sandbox, Gateway, and Blob operations (Blob through `BLOB_STORE_ID`); it is passed only to the Blob helper subprocess and the Sandbox SDK's per-call credentials, never into review VMs.
 
 Deploy with `bun run deploy`. This runs the pinned project deployment through `vc`, then explicitly advances the `verlock.hackclub.dev` alias. The build uses `uv.lock` and `bun.lock`, bundles a verified Linux Node binary, and removes unused CLI builders, native alternative binaries, source maps, and typings to stay within the function size limit.
 
@@ -65,7 +65,7 @@ Server logs include credential-free `launch_timing` records for authorization, G
 
 ## Session lifetime
 
-Every provider operation explicitly uses `--scope hackclub --project verlock`. Each review VM has 2 vCPUs/4 GB RAM, one published desktop port, Internet egress for installing dependencies, and a hard one-hour lifetime. It is non-persistent; download anything needed before closing. Failed provisioning attempts are stopped automatically. Close Session stops only the signed-in user's VM. Ownership persists across control-plane restarts. You can also stop a session with the CLI:
+The app manages review VMs through the `vercel` Python SDK, with credentials pinned to the Hack Club team and verlock project; operator CLI commands use `--scope hackclub --project verlock`. Each review VM has 2 vCPUs/4 GB RAM, one published desktop port, Internet egress for installing dependencies, and a hard one-hour lifetime. It is non-persistent; download anything needed before closing. Failed provisioning attempts are stopped automatically. Close Session stops only the signed-in user's VM. Ownership persists across control-plane restarts. You can also stop a session with the CLI:
 
 ```sh
 vc sandbox list --scope hackclub --project verlock

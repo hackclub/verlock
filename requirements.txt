@@ -7,3 +7,4 @@ python-dotenv>=1,<2
 authlib>=1.4,<2
 itsdangerous>=2.2,<3
 slack-sdk>=3.34,<4
+vercel>=0.11.6,<1

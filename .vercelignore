@@ -5,5 +5,4 @@
 tests
 docker
 __pycache__
-
 *.png

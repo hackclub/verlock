@@ -4,7 +4,7 @@
 
 Verlock recreates Hack Club Airlock's desktop code-review workflow on Vercel. Preserve the original reviewer experience: Hack Club login, a GitHub repository form, streamed AI analysis, a Kasm/XFCE desktop, the review guide and GitHub browser tabs, Thunar, and two terminals. One terminal automatically executes the generated installer; the other is interactive. The intentional desktop appearance change is the Verlock wallpaper.
 
-All hosting and Sandbox operations belong to the **Hack Club Vercel team (`hackclub`)**, project **`verlock`**. Production is **https://verlock.hackclub.dev**. Use native Vercel services and the `vc` CLI for Sandbox management. Keep team/project scope fixed in server code; never accept scope overrides from a request.
+All hosting and Sandbox operations belong to the **Hack Club Vercel team (`hackclub`)**, project **`verlock`**. Production is **https://verlock.hackclub.dev**. Use native Vercel services: the app manages Sandboxes through the `vercel` Python SDK, and operators use the `vc` CLI. Keep team/project scope fixed in server code; never accept scope overrides from a request.
 
 The original desktop uses Kasm/XFCE. Do not replace it with code-server. Kasm Workspaces' external broker, persistent profiles, and broker-managed sharing are outside this implementation. Organization APIs and UI have been retired. Legacy organization records are read only during the one-time access-list migration.
 
@@ -18,7 +18,7 @@ The original desktop uses Kasm/XFCE. Do not replace it with code-server. Kasm Wo
 | Authorization | One persistent allowlist with member/admin roles | `main.py` |
 | AI and GitHub | Async HTTPX calls to OpenAI-compatible chat completions and GitHub REST; Markdown guides rendered to HTML | `main.py`, `ai_errors.py` |
 | Durable state | Private Vercel Blob through a small Node helper; JSON files for local development | `state_store.py`, `scripts/blob.mjs` |
-| Sandbox provisioning | Async Python subprocesses invoking pinned `vc` Sandbox commands | `vercel_sandbox.py`, `runtime_tools.py` |
+| Sandbox provisioning | Async `vercel` Python SDK (`vercel.sandbox.SandboxClient`) with explicit, request-scoped credentials | `vercel_sandbox.py` |
 | Runtime identity | Request-scoped Vercel OIDC token stored in a Python ContextVar | `request_identity.py` |
 | Desktop | Ubuntu 24.04, Kasm desktop 1.18.0, XFCE, KasmVNC, Chrome, Thunar, XFCE terminals | `docker/Dockerfile.vercel`, `sandbox/` |
 | Desktop transport | nginx on published port 8080 proxies authenticated HTTP/WebSocket traffic to KasmVNC on loopback port 6901 | `sandbox/nginx.conf` |
@@ -31,17 +31,17 @@ The desktop retains the original C/C++ tools, Wine/Winetricks, Python scientific
 - `main.py` owns OAuth, authorization, admin APIs, GitHub analysis, AI generation, the streamed session endpoint, session ownership, and closing sessions. `access_control.py` owns the member/admin allowlist and one-time migration from legacy users, organization roles, and `ADMIN_USERS`.
 - `ai_errors.py` converts upstream AI failures into useful messages and redacts credentials. Permanent HTTP 400/401/403/404 failures should not trigger automatic retries.
 - `vercel_sandbox.py` creates an `airlock-<UUID hex>` session from private VCR image `airlock-desktop:v1`. Each VM has 2 vCPUs, 4 GB memory, a hard one-hour lifetime, non-persistent storage, and Internet egress for project setup.
-- The provider copies two small tar archives: per-session credentials and current startup adapters before generation, then the generated Bash installer, HTML guide, and `open-session.sh` after it. Startup-adapter changes usually do not require rebuilding the image.
+- The provider writes two small file batches over the SDK: per-session credentials and current startup adapters before generation, then the generated Bash installer, HTML guide, and `open-session.sh` after it. One SDK client serves a launch, so the post-generation step reuses the sandbox handle. Startup-adapter changes usually do not require rebuilding the image.
 - `sandbox/bootstrap.sh` runs as soon as the VM is created, while AI generation is still in progress: it prepares the user environment, starts the desktop/proxy, clones the repository onto `/home/kasm-user/Desktop/<repo-name>`, and sets the wallpaper. After generation, `sandbox/open-session.sh` writes `airlock_install.sh` and `REVIEW_GUIDE.html` into the clone and opens the applications.
 - `sandbox/desktop-start.sh` explicitly supplies the Kasm/XFCE startup environment. Vercel custom images do not execute Docker ENTRYPOINT/CMD or preserve Docker ENV automatically; `/opt/airlock/image-env.sh` restores baked image settings.
 - `sandbox/wallpaper.svg` is rasterized into the desktop image's background during image construction.
-- Successful provisioning requires the remote `AIRLOCK_DESKTOP_READY` and `AIRLOCK_SESSION_READY` sentinels. A zero local `vc sandbox exec` exit code alone does not prove the remote bootstrap succeeded.
+- Successful provisioning requires the remote `AIRLOCK_DESKTOP_READY` and `AIRLOCK_SESSION_READY` sentinels. A zero process exit code alone does not prove the remote bootstrap succeeded.
 - Failed or interrupted provisioning attempts are stopped. Session ownership is persisted before returning success. The stop API checks the signed-in owner's Slack ID before stopping a VM.
 - `prototype.py` launches a real desktop directly using the local saved `vc` login, with optional installer/guide files, bypassing OAuth and AI generation.
 
 ## AI configuration
 
-Production is configured for **OpenRouter**, `https://openrouter.ai/api/v1`, model **`deepseek/deepseek-v4.1-flash`**. Both stack analysis and installer/guide generation use that model. OpenRouter requests disable optional reasoning and request JSON output for speed and predictable parsing. Prompts are sent as user messages.
+Production is configured for **OpenRouter**, `https://openrouter.ai/api/v1`, model **`qwen/qwen3.8-27b`**. Both stack analysis and installer/guide generation use that model. OpenRouter requests disable optional reasoning, request JSON output, and log the serving provider and token usage (`ai_usage`). Optional `AI_PROVIDER_ORDER` (comma-separated, e.g. `cerebras`) pins preferred hosts with fallbacks; otherwise requests sort by latency/throughput. The server prepends fixed installer boilerplate (strict mode, colored logging, ERR trap, `wait_for_apt`), so the model writes only the project-specific body. Prompts are sent as user messages.
 
 The code's unset-environment defaults remain **Vercel AI Gateway**, `https://ai-gateway.vercel.sh/v1`, model **`inclusionai/ling-3.1-flash`**. Gateway authenticates with the current request's Vercel OIDC token in production, or `AI_GATEWAY_API_KEY` when supplied. A team model allowlist may need the requested model enabled.
 
@@ -55,10 +55,10 @@ Use `AI_BASE_URL`, `AI_MODEL`, and `AI_API_KEY` to select OpenRouter or another 
 - `BLOB_STORE_ID` connects the private `verlock-state` store using the request's Vercel OIDC token, passed only into the Blob helper subprocess; `BLOB_READ_WRITE_TOKEN` remains a fallback. The canonical `state/access.json` allowlist and session ownership use `state/` Blob paths. Access edits use ETag-based conditional writes and retry conflicts to protect concurrent edits and the last-admin rule. Production must fail when durable storage is missing rather than falling back to ephemeral files.
 - Local development without Blob uses ignored `access.json` and `sessions/<name>.json`. Legacy `users.json` and `organizations.json` are read once to seed the canonical list; duplicate IDs are merged and admin roles take precedence. Private Blob reads bypass caching so ownership and access-list changes are current.
 - `GITHUB_TOKEN` is optional for public repositories. `SLACK_BOT_TOKEN` is optional for Slack profiles. Channel membership no longer grants implicit access; all authorized people appear in the dashboard.
-- Vercel runtime OIDC arrives in `x-vercel-oidc-token`. Keep it request-scoped; never write it into the process-wide environment shared by requests. Pass it only into the current CLI or Blob helper subprocess environment.
-- Local Sandbox operations use the saved `vc` login. Production CLI configuration, data, cache, and working directories live under `/tmp` because the function filesystem is read-only elsewhere.
+- Vercel runtime OIDC arrives in `x-vercel-oidc-token`. Keep it request-scoped; never write it into the process-wide environment shared by requests. Pass it only into the Blob helper subprocess environment or the SDK's per-call credentials factory. Never use the SDK's default OIDC resolution in production: its refresh path writes `os.environ`.
+- Local Sandbox operations use the saved `vc` login token (or `VERCEL_AUTH_TOKEN`). The SDK credentials always carry the pinned Hack Club team and verlock project IDs.
 - Desktop launch links are session credentials. The link sets a Secure, HttpOnly, SameSite=Lax, one-hour cookie; requests without it receive 403. KasmVNC credentials are injected only into the loopback proxy inside that VM.
-- Never commit or print secrets, launch tokens, `.env*`, registry credentials, or control-plane credentials. Never copy control-plane credentials into review VMs. Keep CLI errors redacted.
+- Never commit or print secrets, launch tokens, `.env*`, registry credentials, or control-plane credentials. Never copy control-plane credentials into review VMs. Keep Sandbox errors redacted.
 
 ## Dependencies and local commands
 
@@ -109,4 +109,4 @@ Report exactly what was verified. A connected desktop and generated installer do
 
 ## Admin dashboard
 
-`/admin` has two sections: Running sandboxes and People with access. Sandboxes are fetched on demand through scoped `vc sandbox list`, following pagination; rows show owner/repository when recorded, start time, expiration, and resources. Do not expose desktop launch tokens in this list. Access management supports adding people by Slack member ID, setting member/admin roles, and removing access. Members can launch sessions; admins also manage access and inspect running sandboxes. The browser enriches people, sandbox owners, and the add-person preview with public Slack profiles from Cachet (`https://cachet.hackclub.com/users/<id>`); treat responses without `type: "user"` as unknown IDs. Keep organization controls out of the UI and APIs.
+`/admin` has two sections: Running sandboxes and People with access. Sandboxes are fetched on demand through the SDK's paginated sandbox query; rows show owner/repository when recorded, start time, expiration, and resources. Do not expose desktop launch tokens in this list. Access management supports adding people by Slack member ID, setting member/admin roles, and removing access. Members can launch sessions; admins also manage access and inspect running sandboxes. The browser enriches people, sandbox owners, and the add-person preview with public Slack profiles from Cachet (`https://cachet.hackclub.com/users/<id>`); treat responses without `type: "user"` as unknown IDs. Keep organization controls out of the UI and APIs.

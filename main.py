@@ -14,7 +14,7 @@ from access_control import load_access, role_for, update_access
 from vercel_sandbox import create_session, stop_session, reserve_session, list_running_sessions
 from state_store import load_state, save_state
 from ai_errors import AIRequestError, check_ai_response
-from runtime_tools import vc_command
+from importlib.metadata import version as package_version
 from request_identity import current_oidc_token, VercelIdentityMiddleware
 from cachetools import TTLCache
 from dotenv import load_dotenv
@@ -39,6 +39,38 @@ logger = logging.getLogger(__name__)
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 AI_BASE_URL = os.getenv("AI_BASE_URL", "https://ai-gateway.vercel.sh/v1").rstrip("/")
 AI_MODEL = os.getenv("AI_MODEL", "inclusionai/ling-3.1-flash")
+
+# Fixed installer boilerplate; the model writes only the project-specific body.
+INSTALLER_PREAMBLE = r"""#!/usr/bin/env bash
+set -euo pipefail
+print_status() { echo -e "\033[0;32m[INFO]\033[0m $1"; }
+print_warning() { echo -e "\033[0;33m[WARNING]\033[0m $1"; }
+print_error() { echo -e "\033[0;31m[ERROR]\033[0m $1"; }
+trap 'print_error "Installer failed at line $LINENO. Review the output above."' ERR
+wait_for_apt() {
+    while sudo fuser /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend > /dev/null 2>&1; do
+        print_warning "Waiting for another apt process to finish..."
+        sleep 2
+    done
+}
+"""
+
+def with_installer_preamble(body):
+    lines = body.strip().splitlines()
+    while lines and (lines[0].startswith("#!") or lines[0].strip() in {"set -euo pipefail", "set -e", ""}):
+        lines.pop(0)
+    return INSTALLER_PREAMBLE + "\n" + "\n".join(lines) + "\n"
+
+def openrouter_options(payload, sort):
+    """Disable optional reasoning and request JSON; AI_PROVIDER_ORDER pins preferred hosts, e.g. cerebras."""
+    if not AI_BASE_URL.startswith("https://openrouter.ai/"):
+        return payload
+    order = [name.strip() for name in os.getenv("AI_PROVIDER_ORDER", "").split(",") if name.strip()]
+    payload["reasoning"] = {"enabled": False}
+    payload["response_format"] = {"type": "json_object"}
+    payload["provider"] = {"order": order, "allow_fallbacks": True} if order else {"sort": sort}
+    payload["usage"] = {"include": True}
+    return payload
 
 def ai_headers():
     custom = AI_BASE_URL != "https://ai-gateway.vercel.sh/v1"
@@ -313,10 +345,7 @@ async def pre_analyze_project(context):
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.5
     }
-    if AI_BASE_URL.startswith("https://openrouter.ai/"):
-        payload["reasoning"] = {"enabled": False}
-        payload["response_format"] = {"type": "json_object"}
-        payload["provider"] = {"sort": "latency"}
+    openrouter_options(payload, "latency")
 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
@@ -396,22 +425,21 @@ async def analyze_with_ai_data(context, file_contents="", model_id=None):
     Create a production-grade automated installation script and a reviewer guide.
 
     Task 1: bash install script
-    Write a Bash script to install and run the project. You must adhere to the following strict coding standards:
-    1.  **Strict Mode & Safety:** Start with `set -euo pipefail` to ensure the script fails instantly on errors or undefined variables.
-    2.  **Visual Logging:** Use the following function style for output (Green for INFO, Yellow for WARNING, Red for ERROR):
-        - `print_status() {{ echo -e "\\033[0;32m[INFO]\\033[0m $1"; }}`
-        - `print_error() {{ echo -e "\\033[0;31m[ERROR]\\033[0m $1"; }}`
-    3.  **Error Handling:** Use a `trap` function to catch errors and print a helpful message before exiting.
-    4.  **Apt Reliability:** Before running `apt-get install`, use a loop to check for and wait on `/var/lib/dpkg/lock` to ensure apt is not locked by background processes.
-    5.  **Idempotency:** Do not blind install. Check if a package/tool exists using `command -v` before attempting to install it.
-    6.  **Dependencies:** Use uv for Python and bun for JavaScript dependencies. For Python, use `uv sync` when a pyproject.toml exists, otherwise `uv venv venv` and `uv pip install --python venv/bin/python -r requirements.txt`. Keep dependencies isolated. For JavaScript, use `bun install` and `bun run`.
-    7.  **Execution:** The script must handle all dependencies and end by running the project (or printing the command to run it if it is a service).
+    Write only the body of a Bash script that installs and runs the project. The server prepends this preamble, so do not repeat a shebang, `set -euo pipefail`, these functions, or a trap:
+    - `set -euo pipefail` and an ERR trap that reports the failing line.
+    - `print_status "message"` (green INFO), `print_warning "message"` (yellow WARNING), `print_error "message"` (red ERROR). Use them for all progress output.
+    - `wait_for_apt`: call it before every `apt-get` command.
+    Requirements:
+    1.  **Idempotency:** Do not blind install. Check if a package/tool exists using `command -v` before attempting to install it.
+    2.  **Dependencies:** Use uv for Python and bun for JavaScript dependencies. For Python, use `uv sync` when a pyproject.toml exists, otherwise `uv venv venv` and `uv pip install --python venv/bin/python -r requirements.txt`. Keep dependencies isolated. For JavaScript, use `bun install` and `bun run`.
+    3.  **Execution:** The script must handle all dependencies and end by running the project (or printing the command to run it if it is a service).
 
     Task 2: Markdown reviewer guide
     Create a Markdown guide.
     1.  **Header:** The exact command to execute the project (e.g., `./airlock_install.sh` or `source venv/bin/activate && python main.py`).
     2.  **Summary:** A concise technical summary of the project's purpose and the tech stack found in the file structure.
-    3.  **Installer Logic:** A technical explanation of what the script does (e.g., "Checks apt locks, ensures Python 3.10+, creates a virtual environment, installs requirements.txt...").
+    3.  **Installer Logic:** 3-5 short bullets on what the script does (e.g., "Creates a uv virtual environment and installs requirements.txt"). The full script is shown separately, so do not repeat it.
+    Keep the guide brief; do not add other sections.
 
     Task 3: Tech Stack
     A 1-line comma-separated list of the specific languages, frameworks, and critical tools detected.
@@ -440,12 +468,10 @@ async def analyze_with_ai_data(context, file_contents="", model_id=None):
                 "temperature": 0.5,
                 "stream": True
             }
-            if AI_BASE_URL.startswith("https://openrouter.ai/"):
-                payload["reasoning"] = {"enabled": False}
-                payload["response_format"] = {"type": "json_object"}
-                payload["provider"] = {"sort": "throughput"}
+            openrouter_options(payload, "throughput")
 
             full_content = ""
+            provider = usage = None
             start_time = asyncio.get_event_loop().time()
             last_update_time = start_time
             chunk_count = 0
@@ -466,6 +492,8 @@ async def analyze_with_ai_data(context, file_contents="", model_id=None):
                             
                         try:
                             chunk = json.loads(data_str)
+                            provider = chunk.get('provider') or provider
+                            usage = chunk.get('usage') or usage
                             delta = chunk['choices'][0]['delta'].get('content', '')
                             if delta and first_content:
                                 logger.info("ai_first_content seconds=%.3f attempt=%s",
@@ -483,6 +511,11 @@ async def analyze_with_ai_data(context, file_contents="", model_id=None):
                                 
                         except (json.JSONDecodeError, KeyError, IndexError, TypeError):
                             continue
+
+            usage = usage if isinstance(usage, dict) else {}
+            logger.info("ai_usage model=%s provider=%s prompt_tokens=%s completion_tokens=%s seconds=%.3f",
+                        model_id, provider, usage.get('prompt_tokens'), usage.get('completion_tokens'),
+                        asyncio.get_event_loop().time() - start_time)
 
             # Process the full content
             content = full_content
@@ -521,12 +554,12 @@ async def analyze_with_ai_data(context, file_contents="", model_id=None):
                     logger.warning(f"AI Response content (failed to parse): {content[:500]}...")
                     raise
 
-            script = data.get('script', '')
+            script = with_installer_preamble(data.get('script', ''))
             guide = data.get('guide', '')
             tech_stack = data.get('tech_stack', '')
             summary = data.get('summary', '')
 
-            html = f"<html><title>Airlock Manual</title><body style='font-family:sans-serif;padding:20px'><h1>Airlock Manual</h1><h2>AI Review Guide</h2>{markdown.markdown(guide)}<hr><h2>Vibecoded Install script</h2><pre><code>{script}</code></pre><p>You can run it with <code>bash ./airlock_install.sh</code></p><hr><h2>Airlock Info</h2><p>Airlock is a Hack Club tool for reviewing code in an ephemeral virtualized environment. Airlock sessions may not last longer than 1 hour. Please remember to close the Airlock session once you are done. You can use Airlock on airlock.hackclub.com. If you experience any issues, please contact @Carlos on Slack.</p></body></html>"
+            html = f"<html><title>Airlock Manual</title><body style='font-family:sans-serif;padding:20px'><h1>Airlock Manual</h1><h2>AI Review Guide</h2>{markdown.markdown(guide)}<hr><h2>Vibecoded Install script</h2><pre><code>{html.escape(script)}</code></pre><p>You can run it with <code>bash ./airlock_install.sh</code></p><hr><h2>Airlock Info</h2><p>Airlock is a Hack Club tool for reviewing code in an ephemeral virtualized environment. Airlock sessions may not last longer than 1 hour. Please remember to close the Airlock session once you are done. You can use Airlock on airlock.hackclub.com. If you experience any issues, please contact @Carlos on Slack.</p></body></html>"
 
             yield {"type": "result", "data": (script, html, tech_stack, summary)}
             return
@@ -544,12 +577,18 @@ async def analyze_with_ai_data(context, file_contents="", model_id=None):
 
 # Session ownership survives Vercel function restarts in private Blob storage.
 
-async def create_vercel_session_generator(repo_url, install_script, help_html, slack_id, reservation=None):
+def save_ownership(name, slack_id, repo_url):
+    task = asyncio.create_task(asyncio.to_thread(save_state, "sessions/" + name + ".json", {"owner": slack_id, "repo_url": repo_url}))
+    # Failures surface when the launch awaits the task; avoid unretrieved-exception warnings otherwise.
+    task.add_done_callback(lambda done: done.cancelled() or done.exception())
+    return task
+
+async def create_vercel_session_generator(repo_url, install_script, help_html, slack_id, reservation=None, ownership=None):
     async for message in create_session(repo_url, install_script, help_html, reservation):
         if isinstance(message, dict):
             try:
                 with launch_stage("ownership_save", message["name"]):
-                    await asyncio.to_thread(save_state, "sessions/" + message["name"] + ".json", {"owner": slack_id, "repo_url": repo_url})
+                    await (ownership or save_ownership(message["name"], slack_id, repo_url))
             except BaseException:
                 if reservation is None:
                     await asyncio.shield(stop_session(message["name"]))
@@ -730,6 +769,8 @@ async def get_session(repo_url: str, user: dict = Depends(get_current_user)):
                 yield "[*] Creating the sandbox while analyzing the project...\n"
                 async with reserve_session(repo_url_final) as reservation:
                     logger.info("launch_link id=%s sandbox=%s", launch_id, reservation['name'])
+                    # Record ownership while the desktop and installer are prepared.
+                    ownership = save_ownership(reservation['name'], user['slack_id'], repo_url_final)
                     # Pre-analysis
                     yield f"[*] Inspecting the project... ({AI_MODEL})\n"
                     try:
@@ -800,7 +841,7 @@ async def get_session(repo_url: str, user: dict = Depends(get_current_user)):
                         yield f"[!] AI Analysis failed: {e}\n"
                         return
 
-                    async for msg in create_vercel_session_generator(repo_url_final, script, html, user['slack_id'], reservation):
+                    async for msg in create_vercel_session_generator(repo_url_final, script, html, user['slack_id'], reservation, ownership):
                         yield msg
 
                     reservation["delivered"] = True
@@ -887,9 +928,5 @@ async def get_profile(slack_id: str, response: Response, user: dict = Depends(ge
 @app.get('/api/health')
 async def health():
     """Readiness for the native Vercel runtime, without exposing private state."""
-    proc = await asyncio.create_subprocess_exec(*vc_command(), '--version', stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    stdout, _ = await asyncio.wait_for(proc.communicate(), 15)
-    if proc.returncode:
-        raise HTTPException(status_code=503, detail='Sandbox CLI unavailable')
     await asyncio.to_thread(load_access)
-    return {'status':'ok', 'sandbox_cli':stdout.decode().strip(), 'ai_model':AI_MODEL, 'login_configured':bool(HC_CLIENT_ID and HC_CLIENT_SECRET)}
+    return {'status':'ok', 'sandbox_sdk':'vercel ' + package_version('vercel'), 'ai_model':AI_MODEL, 'login_configured':bool(HC_CLIENT_ID and HC_CLIENT_SECRET)}

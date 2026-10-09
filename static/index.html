@@ -281,6 +281,14 @@
             outputDiv.style.display = 'block';
             outputDiv.textContent = 'Initializing...\n';
             popupWarning.classList.add('hidden');
+            // Open the desktop window during the click; browsers block popups opened after the launch finishes.
+            let pendingWindow = window.open('', '_blank');
+            if (pendingWindow) {
+                pendingWindow.opener = null;
+                pendingWindow.document.title = 'Starting Verlock desktop';
+                pendingWindow.document.body.style.cssText = 'margin:0;display:grid;place-items:center;height:100vh;font-family:system-ui,sans-serif;background:Canvas;color:CanvasText;color-scheme:light dark';
+                pendingWindow.document.body.textContent = 'Starting your Verlock desktop…';
+            }
 
             try {
                 const res = await fetch(`/api/v1/getSession?repo_url=${encodeURIComponent(repoUrl)}`);
@@ -317,7 +325,14 @@
                              const url = match[1];
                              sessionOpened = true; 
                              
-                             const win = window.open(url, '_blank');
+                             let win = null;
+                             if (pendingWindow && !pendingWindow.closed) {
+                                 pendingWindow.location.replace(url);
+                                 win = pendingWindow;
+                                 pendingWindow = null;
+                             } else {
+                                 win = window.open(url, '_blank');
+                             }
                              if (!win || win.closed || typeof win.closed == 'undefined') {
                                  popupWarning.classList.remove('hidden');
                                  manualLaunchBtn.href = url;
@@ -330,6 +345,7 @@
                 outputDiv.textContent += `\nError: ${e.message}`;
             } finally {
                 isSessionLoading = false;
+                if (pendingWindow && !pendingWindow.closed) pendingWindow.close();
             }
         });
     </script>
