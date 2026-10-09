@@ -31,11 +31,11 @@ The desktop retains the original C/C++ tools, Wine/Winetricks, Python scientific
 - `main.py` owns OAuth, authorization, admin APIs, GitHub analysis, AI generation, the streamed session endpoint, session ownership, and closing sessions. `access_control.py` owns the member/admin allowlist and one-time migration from legacy users, organization roles, and `ADMIN_USERS`.
 - `ai_errors.py` converts upstream AI failures into useful messages and redacts credentials. Permanent HTTP 400/401/403/404 failures should not trigger automatic retries.
 - `vercel_sandbox.py` creates an `airlock-<UUID hex>` session from private VCR image `airlock-desktop:v1`. Each VM has 2 vCPUs, 4 GB memory, a hard one-hour lifetime, non-persistent storage, and Internet egress for project setup.
-- The provider copies one small tar archive containing the generated Bash installer, HTML guide, per-session credentials, and current startup adapters. Startup-adapter changes usually do not require rebuilding the image.
-- `sandbox/bootstrap.sh` prepares the user environment, starts the desktop/proxy, clones the repository onto `/home/kasm-user/Desktop/<repo-name>`, writes `airlock_install.sh` and `REVIEW_GUIDE.html`, opens the applications, and sets the wallpaper.
+- The provider copies two small tar archives: per-session credentials and current startup adapters before generation, then the generated Bash installer, HTML guide, and `open-session.sh` after it. Startup-adapter changes usually do not require rebuilding the image.
+- `sandbox/bootstrap.sh` runs as soon as the VM is created, while AI generation is still in progress: it prepares the user environment, starts the desktop/proxy, clones the repository onto `/home/kasm-user/Desktop/<repo-name>`, and sets the wallpaper. After generation, `sandbox/open-session.sh` writes `airlock_install.sh` and `REVIEW_GUIDE.html` into the clone and opens the applications.
 - `sandbox/desktop-start.sh` explicitly supplies the Kasm/XFCE startup environment. Vercel custom images do not execute Docker ENTRYPOINT/CMD or preserve Docker ENV automatically; `/opt/airlock/image-env.sh` restores baked image settings.
 - `sandbox/wallpaper.svg` is rasterized into the desktop image's background during image construction.
-- Successful provisioning requires the remote `AIRLOCK_DESKTOP_READY` sentinel. A zero local `vc sandbox exec` exit code alone does not prove the remote bootstrap succeeded.
+- Successful provisioning requires the remote `AIRLOCK_DESKTOP_READY` and `AIRLOCK_SESSION_READY` sentinels. A zero local `vc sandbox exec` exit code alone does not prove the remote bootstrap succeeded.
 - Failed or interrupted provisioning attempts are stopped. Session ownership is persisted before returning success. The stop API checks the signed-in owner's Slack ID before stopping a VM.
 - `prototype.py` launches a real desktop directly using the local saved `vc` login, with optional installer/guide files, bypassing OAuth and AI generation.
 

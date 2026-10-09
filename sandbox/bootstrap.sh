@@ -71,20 +71,6 @@ for i in $(seq 1 90); do
  done
 echo "AIRLOCK_TIMING stage=xfce_start seconds=$((SECONDS - desktop_started))"
 pkill -u kasm-user zenity || true
-wait "$clone_pid"
-wait "$uv_pid"
-trap - EXIT
-cp /vercel/sandbox/airlock_install.sh /vercel/sandbox/REVIEW_GUIDE.html "$HOME/Desktop/$repo_name/"
-chown -R kasm-user:kasm-user "$HOME/Desktop/$repo_name"
-chmod +x "$HOME/Desktop/$repo_name/airlock_install.sh"
-# Match the original session injection: two browser tabs, file manager,
-# interactive terminal, and an automatically executed installer terminal.
-export DISPLAY=:1
-sudo -H -u kasm-user env DISPLAY=:1 x-www-browser "file://$HOME/Desktop/$repo_name/REVIEW_GUIDE.html" > /tmp/airlock-browser.log 2>&1 &
-sudo -H -u kasm-user env DISPLAY=:1 x-www-browser "$repo_url" >> /tmp/airlock-browser.log 2>&1 &
-sudo -H -u kasm-user env DISPLAY=:1 thunar "$HOME/Desktop/$repo_name" > /tmp/airlock-thunar.log 2>&1 &
-sudo -H -u kasm-user env DISPLAY=:1 xfce4-terminal --disable-server --working-directory="$HOME/Desktop/$repo_name" -x bash -c 'source /etc/profile.d/airlock_env.sh; ls -lah; exec bash' > /tmp/airlock-terminal.log 2>&1 &
-sudo -H -u kasm-user env DISPLAY=:1 xfce4-terminal --disable-server --working-directory="$HOME/Desktop/$repo_name" -x bash -c 'source /etc/profile.d/airlock_env.sh; bash ./airlock_install.sh; exec bash' > /tmp/airlock-installer-terminal.log 2>&1 &
 # The only intentional desktop appearance change is the wallpaper.
 wallpaper_started=$SECONDS
 for i in $(seq 1 30); do
@@ -106,6 +92,9 @@ for i in $(seq 1 60); do
     status=$(curl -k -sS -u "kasm_user:$(cat /vercel/sandbox/desktop-password)" -o /dev/null -w '%{http_code}' https://localhost:6901/ || true)
     if [[ "$status" == 200 ]]; then
         echo "AIRLOCK_TIMING stage=vnc_ready seconds=$((SECONDS - vnc_started))"
+        wait "$clone_pid"
+        wait "$uv_pid"
+        trap - EXIT
         echo AIRLOCK_DESKTOP_READY
         exit 0
     fi

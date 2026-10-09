@@ -1,5 +1,20 @@
 # Validation
 
+## Desktop bootstrap during AI generation (2026-10-09, not deployed)
+
+The reservation task now creates the VM and runs `sandbox/bootstrap.sh` (desktop, proxy, clone, wallpaper, VNC check) while the installer is generated. After generation, `sandbox/open-session.sh` adds the installer and guide and opens the applications. `vc()` now uses `/tmp` CLI directories only on Vercel; locally they hid the saved login and `prototype.py` hung on a device-login prompt.
+
+`uv run python prototype.py https://github.com/3kh0/slick` returned both `AIRLOCK_DESKTOP_READY` and `AIRLOCK_SESSION_READY` and a launch link in about 16s; the VM was then stopped. The desktop was not opened in Helium, so the open applications, installer terminal, and the production timing gain remain unverified until deployment.
+
+## Launch latency baseline: 3kh0/slick (2026-10-09)
+
+Helium Playwright, production, signed in as an admin. The page was instrumented to timestamp streamed lines and capture the launch URL instead of opening a popup, so popup-blocker behavior was not observed.
+
+- Click to launch link: 14.8s. Server `stream_total` 14.4s: authorization 0.36s, GitHub metadata 0.18s, manifest inspection 0.11s (no AI pre-analysis), AI generation 5.4s (first token 0.49s, `deepseek/deepseek-v4.1-flash`), VM create 6.4s in parallel, then desktop setup 7.8s: transfer 1.4s, bootstrap 6.0s (XFCE 3s, wallpaper wait 2s, clone 1s, uv 1s, VNC 0s), ownership save 0.4s.
+- The critical path was VM creation followed by desktop setup; AI finished first. A prior `hackclub/verlock` launch took 26.0s with AI generation on the critical path (17.7s, first token 3.2s).
+- Opening the launch URL: KasmVNC canvas after about 1.3s (13 resources, 300 KB). The desktop showed both Chrome tabs, Thunar, and two terminals.
+- The test VM was closed through the owner stop API (200) and no longer appears in `vc sandbox list`.
+
 ## Admin dashboard (2026-10-09)
 
 The dashboard at https://verlock.hackclub.dev/admin has two sections, Running sandboxes and People with access. Organization controls are absent from the page, and `/api/v1/admin/organizations` returns 404.

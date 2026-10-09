@@ -23,15 +23,16 @@ async def vc(*args):
     # Never inherit an OIDC scope or accept scope/project overrides from a request.
     env = dict(os.environ)
     env["VERCEL_TELEMETRY_DISABLED"] = "1"
-    env["XDG_CONFIG_HOME"] = "/tmp/verlock-vc"
-    env["XDG_DATA_HOME"] = "/tmp/verlock-vc-data"
-    env["XDG_CACHE_HOME"] = "/tmp/verlock-vc-cache"
     if os.getenv("VERCEL") and current_oidc_token():
         env["VERCEL_OIDC_TOKEN"] = current_oidc_token()
     if not os.getenv("VERCEL"):
         env.pop("VERCEL_OIDC_TOKEN", None)
     cli_cwd = None
     if os.getenv("VERCEL"):
+        # Only /tmp is writable in the function; locally, keep the saved vc login.
+        env["XDG_CONFIG_HOME"] = "/tmp/verlock-vc"
+        env["XDG_DATA_HOME"] = "/tmp/verlock-vc-data"
+        env["XDG_CACHE_HOME"] = "/tmp/verlock-vc-cache"
         cli_cwd = "/tmp/verlock-vc-working"
         Path(cli_cwd).mkdir(exist_ok=True)
     proc = await asyncio.create_subprocess_exec(
@@ -90,12 +91,43 @@ async def list_running_sessions():
     return sessions
 
 
+async def run_with_files(name, files, script, args, sentinel):
+    """Send files as one archive, then run a sandbox script that must print its sentinel."""
+    stage = script.removesuffix(".sh").replace("-", "_")
+    with tempfile.TemporaryDirectory(prefix="airlock-") as tmp:
+        archive_path = Path(tmp, "session-files.tar")
+        with tarfile.open(archive_path, "w") as archive:
+            for filename, content in files.items():
+                path = Path(tmp, filename)
+                path.write_text(content)
+                path.chmod(0o600)
+                archive.add(path, arcname=filename)
+        archive_path.chmod(0o600)
+        with launch_stage(stage + "_transfer", name):
+            await vc("copy", str(archive_path), f"{name}:/vercel/sandbox/session-files.tar")
+    with launch_stage(stage, name):
+        output = await vc("exec", name, "--sudo", "--", "bash", "-c",
+            f'tar -xf /vercel/sandbox/session-files.tar -C /vercel/sandbox; rm /vercel/sandbox/session-files.tar; exec bash /vercel/sandbox/{script} "$@"',
+            "airlock", *args)
+    for line in output.splitlines():
+        if re.fullmatch(r"AIRLOCK_TIMING stage=[a-z_]+ seconds=[0-9]+", line):
+            logger.info("launch_timing id=%s %s", name, line)
+    if sentinel not in output:
+        raise RuntimeError("Desktop startup failed; inspect its startup logs")
+
+
+def repo_args(repo_url):
+    return repo_url, repo_url.rsplit("/", 1)[-1].removesuffix(".git")
+
+
 @asynccontextmanager
 async def reserve_session(repo_url):
-    """Create in the background; retain cleanup responsibility until delivery."""
+    """Create and start the desktop in the background; retain cleanup until delivery."""
     if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", repo_url):
         raise ValueError("A normalized public GitHub repository URL is required")
     name = "airlock-" + uuid.uuid4().hex
+    access_token = secrets.token_urlsafe(32)
+
     async def create():
         with launch_stage("vm_create", name):
             output = await vc(
@@ -106,9 +138,13 @@ async def reserve_session(repo_url):
         match = re.search(r"https://[a-zA-Z0-9-]+\.vercel\.run", output)
         if not match:
             raise RuntimeError("Vercel did not return a desktop workspace URL")
+        files = {"desktop-password": secrets.token_urlsafe(24), "desktop-token": access_token}
+        for filename in ("bootstrap.sh", "desktop-start.sh", "nginx.conf"):
+            files[filename] = Path(__file__).with_name("sandbox").joinpath(filename).read_text()
+        await run_with_files(name, files, "bootstrap.sh", repo_args(repo_url), "AIRLOCK_DESKTOP_READY")
         return match[0]
 
-    reservation = {"name": name, "task": asyncio.create_task(create()), "delivered": False}
+    reservation = {"name": name, "token": access_token, "task": asyncio.create_task(create()), "delivered": False}
     try:
         yield reservation
     finally:
@@ -133,41 +169,14 @@ async def create_session(repo_url, install_script, help_html, reservation=None):
                 yield message
         return
     name = reservation["name"]
-    password = secrets.token_urlsafe(24)
-    access_token = secrets.token_urlsafe(32)
+    if not reservation["task"].done():
+        yield "[*] Waiting for the Kasm desktop and repository clone...\n"
     url = await reservation["task"]
     with launch_stage("desktop_setup", name):
-        yield "[*] Starting the Kasm desktop and cloning repository...\n"
-        with tempfile.TemporaryDirectory(prefix="airlock-") as tmp:
-            files = {
-                "airlock_install.sh": install_script,
-                "REVIEW_GUIDE.html": help_html,
-                "desktop-password": password,
-                "desktop-token": access_token,
-            }
-            # Copy the current launch helpers so changes to session setup don't
-            # require rebuilding all desktop applications and toolchains.
-            for filename in ("bootstrap.sh", "desktop-start.sh", "nginx.conf"):
-                files[filename] = Path(__file__).with_name("sandbox").joinpath(filename).read_text()
-            archive_path = Path(tmp, "session-files.tar")
-            with tarfile.open(archive_path, "w") as archive:
-                for filename, content in files.items():
-                    path = Path(tmp, filename)
-                    path.write_text(content)
-                    path.chmod(0o600)
-                    archive.add(path, arcname=filename)
-            archive_path.chmod(0o600)
-            with launch_stage("transfer", name):
-                await vc("copy", str(archive_path), f"{name}:/vercel/sandbox/session-files.tar")
-            with launch_stage("bootstrap", name):
-                boot_output = await vc("exec", name, "--sudo", "--", "bash", "-c",
-                    'tar -xf /vercel/sandbox/session-files.tar -C /vercel/sandbox; rm /vercel/sandbox/session-files.tar; exec bash /vercel/sandbox/bootstrap.sh "$1" "$2"',
-                    "airlock", repo_url, repo_url.rsplit("/", 1)[-1].removesuffix(".git"))
-            for line in boot_output.splitlines():
-                if re.fullmatch(r"AIRLOCK_TIMING stage=[a-z_]+ seconds=[0-9]+", line):
-                    logger.info("launch_timing id=%s %s", name, line)
-            if "AIRLOCK_DESKTOP_READY" not in boot_output:
-                raise RuntimeError("Desktop startup failed; inspect its startup logs")
+        yield "[*] Adding the installer and review guide to the desktop...\n"
+        files = {"airlock_install.sh": install_script, "REVIEW_GUIDE.html": help_html,
+                 "open-session.sh": Path(__file__).with_name("sandbox").joinpath("open-session.sh").read_text()}
+        await run_with_files(name, files, "open-session.sh", repo_args(repo_url), "AIRLOCK_SESSION_READY")
         yield "[*] The review guide, GitHub page, file manager, and both terminals are open. The installer runs automatically.\n"
         yield "[*] This workspace expires after one hour. Download anything you need before closing it.\n"
-        yield {"name": name, "url": f"{url}/launch/{access_token}"}
+        yield {"name": name, "url": f"{url}/launch/{reservation['token']}"}
