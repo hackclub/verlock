@@ -1,5 +1,6 @@
 import os
 import json
+import html
 import base64
 import asyncio
 import httpx
@@ -649,7 +650,24 @@ async def auth_callback(request: Request):
         role = await asyncio.to_thread(role_for, slack_id)
         if role is None:
             return HTMLResponse(
-                '<h1>Access denied</h1><p>Ask a Verlock admin to add your Slack member ID to People with access.</p><a href="/logout">Try another account</a>',
+                f"""
+                <html>
+                <head>
+                    <title>Verlock | Access Denied</title>
+                    <style>
+                        body {{ display: flex; justify-content: center; align-items: center; min-height: 100vh; flex-direction: column; margin: 0; font-family: sans-serif; padding: 40px; text-align: center; box-sizing: border-box; }}
+                        code {{ font-size: 1.2em; background: #f1f1f1; padding: 4px 8px; border-radius: 4px; user-select: all; }}
+                        .btn {{ display: inline-block; background: #ec3750; color: white; padding: 10px 20px; text-decoration: none; border-radius: 4px; margin-top: 20px; }}
+                    </style>
+                </head>
+                <body>
+                    <h1>Access Denied</h1>
+                    <p>You signed in with Slack member ID <code>{html.escape(str(slack_id))}</code></p>
+                    <p>Ask a Verlock admin to add this ID to People with access.</p>
+                    <a href="/logout" class="btn">Try another account</a>
+                </body>
+                </html>
+                """,
                 status_code=403,
             )
         user_info['is_admin'] = role == 'admin'
