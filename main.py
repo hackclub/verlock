@@ -559,9 +559,9 @@ async def analyze_with_ai_data(context, file_contents="", model_id=None):
             tech_stack = data.get('tech_stack', '')
             summary = data.get('summary', '')
 
-            html = f"<html><title>Airlock Manual</title><body style='font-family:sans-serif;padding:20px'><h1>Airlock Manual</h1><h2>AI Review Guide</h2>{markdown.markdown(guide)}<hr><h2>Vibecoded Install script</h2><pre><code>{html.escape(script)}</code></pre><p>You can run it with <code>bash ./airlock_install.sh</code></p><hr><h2>Airlock Info</h2><p>Airlock is a Hack Club tool for reviewing code in an ephemeral virtualized environment. Airlock sessions may not last longer than 1 hour. Please remember to close the Airlock session once you are done. You can use Airlock on airlock.hackclub.com. If you experience any issues, please contact @Carlos on Slack.</p></body></html>"
+            manual_html = f"<html><title>Airlock Manual</title><body style='font-family:sans-serif;padding:20px'><h1>Airlock Manual</h1><h2>AI Review Guide</h2>{markdown.markdown(guide)}<hr><h2>Vibecoded Install script</h2><pre><code>{html.escape(script)}</code></pre><p>You can run it with <code>bash ./airlock_install.sh</code></p><hr><h2>Airlock Info</h2><p>Airlock is a Hack Club tool for reviewing code in an ephemeral virtualized environment. Airlock sessions may not last longer than 1 hour. Please remember to close the Airlock session once you are done. You can use Airlock on airlock.hackclub.com. If you experience any issues, please contact @Carlos on Slack.</p></body></html>"
 
-            yield {"type": "result", "data": (script, html, tech_stack, summary)}
+            yield {"type": "result", "data": (script, manual_html, tech_stack, summary)}
             return
         
         except Exception as e:
