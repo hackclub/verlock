@@ -124,7 +124,7 @@ def repo_args(repo_url):
 
 
 @asynccontextmanager
-async def reserve_session(repo_url):
+async def reserve_session(repo_url, *, region="iad1"):
     """Create and start the desktop in the background; retain cleanup until delivery."""
     if not re.fullmatch(r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:\.git)?", repo_url):
         raise ValueError("A normalized public GitHub repository URL is required")
@@ -136,7 +136,7 @@ async def reserve_session(repo_url):
         with launch_stage("vm_create", name):
             async with sandbox_errors("create", 120):
                 sandbox = await client.create_sandbox(
-                    name=name, image="airlock-desktop:v1", ports=[8080],
+                    name=name, image="airlock-desktop:v1", ports=[8080], region=region,
                     execution_time_limit=TIMEOUT_SECONDS, resources=SandboxResources(vcpus=2),
                     persistent=False, network_policy=NetworkPolicy.allow_all(), tags={"app": "airlock"},
                 )

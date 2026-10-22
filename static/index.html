@@ -175,6 +175,7 @@
         </span>
     </footer>
 
+    <script src="/static/sandbox-region.js"></script>
     <script>
         const loginSection = document.getElementById('login-section');
         const appSection = document.getElementById('app-section');
@@ -291,7 +292,9 @@
             }
 
             try {
-                const res = await fetch(`/api/v1/getSession?repo_url=${encodeURIComponent(repoUrl)}`);
+                outputDiv.textContent = 'Checking the fastest sandbox region…\n';
+                const region = await findFastestSandboxRegion();
+                const res = await fetch(`/api/v1/getSession?repo_url=${encodeURIComponent(repoUrl)}&region=${encodeURIComponent(region)}`);
                 
                 if (res.status === 401) {
                     isSessionLoading = false;

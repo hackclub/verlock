@@ -10,6 +10,7 @@ import uuid
 import re
 import tomllib
 from launch_timing import launch_stage
+from sandbox_region import validated_region
 from access_control import load_access, role_for, update_access
 from vercel_sandbox import create_session, stop_session, reserve_session, list_running_sessions
 from state_store import load_state, save_state
@@ -739,7 +740,8 @@ async def me(user: dict = Depends(get_current_user)):
     return {"status": "authenticated", "user": user_data}
 
 @app.get("/api/v1/getSession")
-async def get_session(repo_url: str, user: dict = Depends(get_current_user)):
+async def get_session(repo_url: str, region: str = "iad1", user: dict = Depends(get_current_user)):
+    region = validated_region(region)
     launch_id = uuid.uuid4().hex
     with launch_stage("authorization", launch_id):
         if not await asyncio.to_thread(is_authorized, user['slack_id']):
@@ -766,8 +768,8 @@ async def get_session(repo_url: str, user: dict = Depends(get_current_user)):
                     yield f"[!] Error fetching GitHub data: {e}\n"
                     return
 
-                yield "[*] Creating the sandbox while analyzing the project...\n"
-                async with reserve_session(repo_url_final) as reservation:
+                yield f"[*] Creating the sandbox in {region} while analyzing the project...\n"
+                async with reserve_session(repo_url_final, region=region) as reservation:
                     logger.info("launch_link id=%s sandbox=%s", launch_id, reservation['name'])
                     # Record ownership while the desktop and installer are prepared.
                     ownership = save_ownership(reservation['name'], user['slack_id'], repo_url_final)
